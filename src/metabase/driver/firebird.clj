@@ -1,21 +1,20 @@
 (ns metabase.driver.firebird
-  (:require [clojure
-             [set :as set]
-             [string :as str]]
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
             [clojure.java.jdbc :as jdbc]
             [honey.sql :as hsql]
             [java-time :as t]
             [metabase.driver :as driver]
             [metabase.driver.common :as driver.common]
-            ;; [metabase.driver.sql-jdbc.sync.describe-database :as sql-jdbc.sync.describe-database]
-            [metabase.driver.sql-jdbc
-             [common :as sql-jdbc.common]
-             [connection :as sql-jdbc.conn]
-             [sync :as sql-jdbc.sync]]
+            [metabase.driver.sql-jdbc.common :as sql-jdbc.common]
+            [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
+            [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
             [metabase.driver.sql-jdbc.sync.common :as sql-jdbc.sync.common]
             [metabase.driver.sql.query-processor :as sql.qp]
             [metabase.util.honey-sql-2 :as hx]
-            [metabase.util.ssh :as ssh])
+            [metabase.util.log :as log]
+            [metabase.util.malli :as mu]
+            [metabase.util.malli.registry :as mr])
   (:import [java.sql DatabaseMetaData Time]
            [java.time LocalDate LocalDateTime LocalTime OffsetDateTime OffsetTime ZonedDateTime]
            [java.sql Connection DatabaseMetaData ResultSet]))
@@ -24,35 +23,45 @@
 
 (driver/register! :firebird, :parent :sql-jdbc)
 
-(defn- firebird->spec
-  "Create a database specification for a FirebirdSQL database."
-  [{:keys [host port db jdbc-flags]
-    :or   {host "localhost", port 3050, db "", jdbc-flags ""}
-    :as   opts}]
-  (merge {:classname   "org.firebirdsql.jdbc.FBDriver"
-          :subprotocol "firebirdsql"
-          :subname     (str "//" host ":" port "/" db jdbc-flags)}
-         (dissoc opts :host :port :db :jdbc-flags)))
-
-;; use Honey SQL 2
-(defmethod sql.qp/honey-sql-version :firebird
-           [_driver]
-           2)
-
-;; Obtain connection properties for connection to a Firebird database.
-(defmethod sql-jdbc.conn/connection-details->spec :firebird [_ details]
-  (-> details
-      (update :port (fn [port]
-                      (if (string? port)
-                        (Integer/parseInt port)
-                        port)))
-      (set/rename-keys {:dbname :db})
-      firebird->spec
+;; jdbc:firebirdsql://192.168.0.101:3050/C:\\users\\john2\\Documents\\TEST1.FDB
+(defmethod sql-jdbc.conn/connection-details->spec :firebird
+  [_driver {:keys [user password dbname host port]
+            :or   {user "sysdba", password "masterkey", dbname "", port 3050, host "localhost"}
+            :as   details}]
+  (-> {:classname   "org.firebirdsql.jdbc.FBDriver"
+       :subprotocol "firebirdsql"
+       :subname     (str "//" host ":" port "/" dbname),
+       :user user
+       :password password}
       (sql-jdbc.common/handle-additional-options details)))
 
-(defmethod driver/can-connect? :firebird [driver details]
-  (let [connection (sql-jdbc.conn/connection-details->spec driver (ssh/include-ssh-tunnel! details))]
+
+
+  ;; use Honey SQL 2
+(defmethod sql.qp/honey-sql-version :firebird
+           [driver]
+           2)
+
+(defmethod driver/can-connect? :firebird
+  [driver details]
+  (let [connection (sql-jdbc.conn/connection-details->spec driver  details)]
     (= 1 (first (vals (first (jdbc/query connection ["SELECT 1 FROM RDB$DATABASE"])))))))
+
+
+(doseq [[feature supported?] {; supported
+                               :basic-aggregations                      true
+                               :expression-aggregations                 true
+                               :foreign-keys                            true
+                               :nested-queries                          true
+                               :standard-deviation-aggregations         true
+                               ; not supported
+                               :binning                                 false
+                               :case-sensitivity-string-filter-options  false
+                               :nested-fields                           false
+                               :schemas                                 false
+                               :set-timezone                            false}]
+  (defmethod driver/database-supports? [:firebird feature] [_driver _feature _db] supported?))
+
 
 ;; Use pattern matching because some parameters can have a length parameter, e.g. VARCHAR(255)
 (def ^:private database-type->base-type
@@ -76,8 +85,9 @@
      [#"BOOLEAN"          :type/Boolean]]))
 
 ;; Map Firebird data types to base types
-(defmethod sql-jdbc.sync/database-type->base-type :firebird [_ database-type]
-  (database-type->base-type database-type))
+(defmethod sql-jdbc.sync/database-type->base-type :firebird
+  [_ column-type]
+  (database-type->base-type column-type))
 
 ;; Use "FIRST" instead of "LIMIT"
 (defmethod sql.qp/apply-top-level-clause [:firebird :limit] [_ _ honeysql-form {value :limit}]
@@ -108,20 +118,6 @@
     ;; truthy wheter or not it returns a ResultSet, but we can ignore that since we have enough info to proceed at
     ;; this point.
     (.execute stmt)))
-
-(defmethod sql-jdbc.sync/have-select-privilege? :firebird
-  [driver conn table-schema table-name]
-  ;; Query completes = we have SELECT privileges
-  ;; Query throws some sort of no permissions exception = no SELECT privileges
-  (let [sql-args (simple-select-probe-query driver table-schema table-name)]
-    (try
-      (execute-select-probe-query driver conn sql-args)
-      true
-      (catch Throwable _
-        false))))
-
-(defmethod sql-jdbc.sync/active-tables :firebird [& args]
-  (apply sql-jdbc.sync/post-filtered-active-tables args))
 
 ;; Convert unix time to a timestamp
 (defmethod sql.qp/unix-timestamp->honeysql [:firebird :seconds] [_ _ expr]
@@ -258,16 +254,4 @@
     (sql.qp/->honeysql driver (t/local-date t))
     (hx/cast :TIMESTAMP (t/format "yyyy-MM-dd HH:mm:ss.SSSS" t))))
 
-(doseq [[feature supported?] {; supported
-                              :basic-aggregations                      true
-                              :expression-aggregations                 true
-                              :foreign-keys                            true
-                              :nested-queries                          true
-                              :standard-deviation-aggregations         true
-                              ; not supported
-                              :binning                                 false
-                              :case-sensitivity-string-filter-options  false
-                              :nested-fields                           false
-                              :schemas                                 false
-                              :set-timezone                            false}]
-  (defmethod driver/database-supports? [:firebird feature] [_driver _feature _db] supported?))
+

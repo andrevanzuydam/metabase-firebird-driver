@@ -3,7 +3,7 @@
 DRIVER_PATH=`pwd`
 
 # switch to the local checkout of the Metabase repo
-cd ../metabase
+cd ../../../../metabase
 
 # get absolute path to the driver project directory
 

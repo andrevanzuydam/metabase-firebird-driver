@@ -11,13 +11,16 @@ driver:
     - host
     - merge:
         - port
-        - default: 3050
+        - placeholder: 3050
     - merge:
         - dbname
-        - name: db
-          placeholder: BirdsOfTheWorld
-    - user
-    - password
+        - placeholder: BirdsOfTheWorld
+    - merge:
+        - user
+        - required: true
+    - merge:
+        - password
+        - required: true
     - merge:
         - additional-options
         - placeholder: "blobBufferSize=2048"
