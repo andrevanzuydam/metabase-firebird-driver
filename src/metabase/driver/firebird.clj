@@ -25,12 +25,12 @@
 
 ;; Connection details
 (defmethod sql-jdbc.conn/connection-details->spec :firebird
-           [_driver {:keys [user password dbname host port]
-                     :or   {user "sysdba", password "masterkey", dbname "", port 3050, host "localhost"}
+           [_driver {:keys [user password db host port]
+                     :or   {user "sysdba", password "masterkey", db "", port 3050, host "localhost"}
                      :as   details}]
            (-> {:classname   "org.firebirdsql.jdbc.FBDriver"
-                :subprotocol "firebird"
-                :subname     (str "//" host ":" port "/" dbname)
+                :subprotocol "firebirdsql"
+                :subname     (str "//" host ":" port "/" db),
                 :user user
                 :password password}
                (sql-jdbc.common/handle-additional-options details)))
@@ -53,15 +53,37 @@
                               :foreign-keys                            true
                               :nested-queries                          true
                               :standard-deviation-aggregations         true
-                              :schemas                                 true
                               ; not supported
+                              :schemas                                 false
                               :binning                                 false
                               :case-sensitivity-string-filter-options  false
                               :nested-fields                           false
                               :set-timezone                            false}]
        (defmethod driver/database-supports? [:firebird feature] [_driver _feature _db] supported?))
 
-;; Data type mapping
+
+
+;; Schema syncing
+(defmethod driver/describe-database :firebird
+           [driver database]
+           (try
+             (sql-jdbc.execute/do-with-connection-with-options
+               driver
+               database
+               nil
+               (fn [^Connection conn]
+                   (let [spec (sql-jdbc.conn/db->pooled-connection-spec database)
+                         result (jdbc/query spec
+                                            ["SELECT TRIM(RDB$RELATION_NAME) AS name FROM RDB$RELATIONS WHERE RDB$SYSTEM_FLAG = 0 AND RDB$RELATION_TYPE IN (0, 1) ORDER BY name"])]
+                        {:tables
+                         (into #{}
+                               (map (fn [row]
+                                        {:name (str/trim (:name row))
+                                         :schema nil}))
+                               result)})))
+             (catch Exception e
+               (throw (Exception. (str "Error in describe-database: " (.getMessage e)) e)))))
+
 (def ^:private database-type->base-type
   (sql-jdbc.sync/pattern-based-database-type->base-type
     [[#"INT64"            :type/BigInteger]
@@ -87,52 +109,104 @@
            [_ column-type]
            (database-type->base-type column-type))
 
-;; Schema syncing
-(defmethod driver/describe-database :firebird
-           [driver database]
-           (try
-             (sql-jdbc.execute/do-with-connection-with-options
-               driver
-               database
-               nil
-               (fn [^Connection conn]
-                   (let [spec (sql-jdbc.conn/db->pooled-connection-spec database)
-                         result (jdbc/query spec
-                                            ["SELECT TRIM(RDB$RELATION_NAME) AS name FROM RDB$RELATIONS WHERE RDB$SYSTEM_FLAG = 0 AND RDB$RELATION_TYPE IN (0, 1) ORDER BY name"])]
-                        {:tables
-                         (into #{}
-                               (map (fn [row]
-                                        {:name (str/trim (:name row))
-                                         :schema nil}))
-                               result)})))
-             (catch Exception e
-               (throw (Exception. (str "Error in describe-database: " (.getMessage e)) e)))))
-
 (defmethod driver/describe-table :firebird
-          [driver database {:keys [name]}]
-          (try
-            (sql-jdbc.execute/do-with-connection-with-options
-              driver
-              database
-              nil
-              (fn [^Connection conn]
-                  (let [spec (sql-jdbc.conn/db->pooled-connection-spec database)
-                        result (jdbc/query spec
-                                           ["SELECT TRIM(rf.RDB$FIELD_NAME) AS name, CASE WHEN f.RDB$FIELD_TYPE = 7 THEN 'SMALLINT' WHEN f.RDB$FIELD_TYPE = 8 THEN 'INTEGER' WHEN f.RDB$FIELD_TYPE = 10 THEN 'FLOAT' WHEN f.RDB$FIELD_TYPE = 12 THEN 'DATE' WHEN f.RDB$FIELD_TYPE = 13 THEN 'TIME' WHEN f.RDB$FIELD_TYPE = 14 THEN 'CHAR' WHEN f.RDB$FIELD_TYPE = 16 THEN 'BIGINT' WHEN f.RDB$FIELD_TYPE = 27 THEN 'DOUBLE PRECISION' WHEN f.RDB$FIELD_TYPE = 35 THEN 'TIMESTAMP' WHEN f.RDB$FIELD_TYPE = 37 THEN 'VARCHAR' WHEN f.RDB$FIELD_TYPE = 261 THEN 'BLOB SUB_TYPE TEXT' ELSE 'UNKNOWN' END AS database-type, rf.RDB$FIELD_POSITION AS position, CASE WHEN rf.RDB$NULL_FLAG = 1 THEN FALSE ELSE TRUE END AS nullable, EXISTS (SELECT 1 FROM RDB$RELATION_CONSTRAINTS rc JOIN RDB$INDEX_SEGMENTS idx ON rc.RDB$INDEX_NAME = idx.RDB$INDEX_NAME WHERE rc.RDB$CONSTRAINT_TYPE = 'PRIMARY KEY' AND rc.RDB$RELATION_NAME = rf.RDB$RELATION_NAME AND idx.RDB$FIELD_NAME = rf.RDB$FIELD_NAME) AS pk FROM RDB$RELATION_FIELDS rf JOIN RDB$FIELDS f ON rf.RDB$FIELD_SOURCE = f.RDB$FIELD_NAME WHERE rf.RDB$RELATION_NAME = ?" name])]
-                       {:name name
-                        :schema nil
-                        :fields
-                        (into #{}
-                              (map (fn [row]
-                                       {:name (str/trim (:name row))
-                                        :database-type (:database-type row)
-                                        :base-type (database-type->base-type (:database-type row))
-                                        :database-position (:position row)
-                                        :database-required (not (:nullable row))
-                                        :pk? (:pk row)}))
-                              result)})))
-            (catch Exception e
-              (throw (Exception. (str "Error in describe-table: " (.getMessage e)) e)))))
+           [driver database {:keys [name]}]
+           (sql-jdbc.execute/do-with-connection-with-options
+             driver
+             database
+             nil
+             (fn [^Connection conn]
+                 (let [spec (sql-jdbc.conn/db->pooled-connection-spec database)
+                       result (jdbc/query spec
+                                          [(str "SELECT TRIM(rf.RDB$FIELD_NAME) AS field_name, "
+                                                "CASE WHEN f.RDB$FIELD_TYPE = 7 THEN 'SMALLINT' "
+                                                "WHEN f.RDB$FIELD_TYPE = 8 THEN 'INTEGER' "
+                                                "WHEN f.RDB$FIELD_TYPE = 10 THEN 'FLOAT' "
+                                                "WHEN f.RDB$FIELD_TYPE = 12 THEN 'DATE' "
+                                                "WHEN f.RDB$FIELD_TYPE = 13 THEN 'TIME' "
+                                                "WHEN f.RDB$FIELD_TYPE = 14 THEN 'CHAR' "
+                                                "WHEN f.RDB$FIELD_TYPE = 16 THEN 'BIGINT' "
+                                                "WHEN f.RDB$FIELD_TYPE = 27 THEN 'DOUBLE PRECISION' "
+                                                "WHEN f.RDB$FIELD_TYPE = 35 THEN 'TIMESTAMP' "
+                                                "WHEN f.RDB$FIELD_TYPE = 37 THEN 'VARCHAR' "
+                                                "WHEN f.RDB$FIELD_TYPE = 261 THEN 'BLOB SUB_TYPE TEXT' "
+                                                "ELSE 'UNKNOWN' END AS database_type, "
+                                                "rf.RDB$FIELD_POSITION AS \"position\", "
+                                                "CASE WHEN rf.RDB$NULL_FLAG = 1 THEN FALSE ELSE TRUE END AS nullable, "
+                                                "EXISTS (SELECT 1 FROM RDB$RELATION_CONSTRAINTS rc "
+                                                "JOIN RDB$INDEX_SEGMENTS idx ON rc.RDB$INDEX_NAME = idx.RDB$INDEX_NAME "
+                                                "WHERE rc.RDB$CONSTRAINT_TYPE = 'PRIMARY KEY' "
+                                                "AND rc.RDB$RELATION_NAME = rf.RDB$RELATION_NAME "
+                                                "AND idx.RDB$FIELD_NAME = rf.RDB$FIELD_NAME) AS pk "
+                                                "FROM RDB$RELATION_FIELDS rf "
+                                                "JOIN RDB$FIELDS f ON rf.RDB$FIELD_SOURCE = f.RDB$FIELD_NAME "
+                                                "WHERE rf.RDB$RELATION_NAME = ?") name])]
+                      {:name name
+                       :schema nil
+                       :fields
+                       (into #{}
+                             (map (fn [row]
+                                      {:name (str/trim (:field_name row))
+                                       :database-type (:database_type row)
+                                       :base-type (sql-jdbc.sync/database-type->base-type :firebird (:database_type row))
+                                       :database-position (:position row)
+                                       :database-required (not (:nullable row))
+                                       :pk? (:pk row)}))
+                             result)}))))
+
+(defmethod sql-jdbc.sync/describe-fields-sql :firebird
+           [driver & {:keys [table-names]}]
+           (hsql/format
+             {:select [[:%trim.rf.rdb$field_name :name]
+                       [(hsql/call :case
+                                   [:= :f.rdb$field_type 7] "SMALLINT"
+                                   [:= :f.rdb$field_type 8] "INTEGER"
+                                   [:= :f.rdb$field_type 10] "FLOAT"
+                                   [:= :f.rdb$field_type 12] "DATE"
+                                   [:= :f.rdb$field_type 13] "TIME"
+                                   [:= :f.rdb$field_type 14] "CHAR"
+                                   [:= :f.rdb$field_type 16] "BIGINT"
+                                   [:= :f.rdb$field_type 27] "DOUBLE PRECISION"
+                                   [:= :f.rdb$field_type 35] "TIMESTAMP"
+                                   [:= :f.rdb$field_type 37] "VARCHAR"
+                                   [:= :f.rdb$field_type 261] "BLOB SUB_TYPE TEXT"
+                                   :else "UNKNOWN") :database-type]
+                       [:- :rf.rdb$field_position [:inline 1] :database-position]
+                       [:null :table-schema]
+                       [:rf.rdb$relation_name :table-name]
+                       [(hsql/call :exists
+                                   {:select [:inline 1]
+                                    :from [:rdb$relation_constraints :rc]
+                                    :join [:rdb$index_segments :idx]
+                                    [:= :rc.rdb$index_name :idx.rdb$index_name]
+                                    :where [:and
+                                            [:= :rc.rdb$constraint_type "PRIMARY KEY"]
+                                            [:= :rc.rdb$relation_name :rf.rdb$relation_name]
+                                            [:= :idx.rdb$field_name :rf.rdb$field_name]]})
+                        :pk?]
+                       [:null :field-comment]
+                       [(hsql/call :case
+                                   [:= :rf.rdb$null_flag 1] false
+                                   :else true) :database-required]
+                       [(hsql/call :exists
+                                   {:select [:inline 1]
+                                    :from [:rdb$triggers :t]
+                                    :join [:rdb$dependencies :d]
+                                    [:= :t.rdb$trigger_name :d.rdb$dependent_name]
+                                    :where [:and
+                                            [:= :t.rdb$relation_name :rf.rdb$relation_name]
+                                            [:= :d.rdb$field_name :rf.rdb$field_name]
+                                            [:= :t.rdb$trigger_type 1]
+                                            [:like :t.rdb$trigger_source "%GEN_ID%"]]})
+                        :database-is-auto-increment]]
+              :from [[:rdb$relation_fields :rf]]
+              :join [[:rdb$fields :f] [:= :rf.rdb$field_source :f.rdb$field_name]]
+              :where [:and
+                      [:not-like :rf.rdb$relation_name [:inline "RDB$%"]]
+                      [:not-like :rf.rdb$relation_name [:inline "MON$%"]]
+                      (when table-names [:in :rf.rdb$relation_name table-names])]
+              :order-by [:table-name :database-position]}
+             :dialect (sql.qp/quote-style driver)))
 
 (defn simple-select-probe-query
       [driver _schema table]
@@ -154,14 +228,55 @@
           (log/errorf "Error executing probe query: %s" (.getMessage e))
           false)))
 
-;; Query clauses
+;; Limit clause for MBQL queries
 (defmethod sql.qp/apply-top-level-clause [:firebird :limit]
-           [_ _ honeysql-form {value :limit}]
-           (assoc honeysql-form :modifiers [(format "FIRST %d" value)]))
+           [_ _ honeysql-query {value :limit}]
+           {:pre [(number? value)]}
+           (-> (merge {:select [:*]} honeysql-query)
+               (update :select sql.u/select-clause-deduplicate-aliases)
+               (assoc :modifiers [(format "FIRST %d" value)])))
 
+;; Page clause for MBQL queries with pagination
 (defmethod sql.qp/apply-top-level-clause [:firebird :page]
-           [_ _ honeysql-form {{:keys [items page]} :page}]
-           (assoc honeysql-form :modifiers [(format "FIRST %d SKIP %d" items (* items (dec page)))]))
+           [driver _ honeysql-query {{:keys [items page]} :page}]
+           {:pre [(number? items) (number? page)]}
+           (let [offset (* (dec page) items)]
+                (-> (merge {:select [:*]} honeysql-query)
+                    (update :select sql.u/select-clause-deduplicate-aliases)
+                    (assoc :modifiers [(format "FIRST %d SKIP %d" items offset)]))))
+
+;; Preprocess method to handle native queries
+(defmethod sql.qp/preprocess :firebird
+           [driver query]
+           (let [parent-method (get-method sql.qp/preprocess :sql)]
+                (log/infof "Preprocessed Firebird MBQL query: %s" :sql)
+                (if (:native query)
+                  (let [native-sql (:query (:native query))
+                        ;; Normalize whitespace and handle LIMIT/OFFSET
+                        normalized-sql (str/replace native-sql #"\s+" " ")
+                        modified-sql (cond
+                                       ;; Handle LIMIT n OFFSET m
+                                       (re-find #"\bLIMIT\s+(\d+)\b\s+OFFSET\s+(\d+)\b\s*(?:;)?$" normalized-sql)
+                                       (let [[_ limit-num offset-num] (re-find #"\bLIMIT\s+(\d+)\b\s+OFFSET\s+(\d+)\b\s*(?:;)?$" normalized-sql)
+                                             without-limit-offset (str/replace normalized-sql #"\bLIMIT\s+\d+\b\s+OFFSET\s+\d+\b\s*(?:;)?$" "")
+                                             modified (str/replace-first without-limit-offset #"\bSELECT\b" (str "SELECT FIRST " limit-num " SKIP " offset-num))]
+                                            (log/debugf "Preprocessed Firebird native SQL: %s -> %s" native-sql modified)
+                                            modified)
+                                       ;; Handle LIMIT n
+                                       (re-find #"\bLIMIT\s+(\d+)\b\s*(?:;)?$" normalized-sql)
+                                       (let [limit-num (second (re-find #"\bLIMIT\s+(\d+)\b\s*(?:;)?$" normalized-sql))
+                                             without-limit (str/replace normalized-sql #"\bLIMIT\s+\d+\b\s*(?:;)?$" "")
+                                             modified (str/replace-first without-limit #"\bSELECT\b" (str "SELECT FIRST " limit-num))]
+                                            (log/debugf "Preprocessed Firebird native SQL: %s -> %s" native-sql modified)
+                                            modified)
+                                       :else
+                                       (do
+                                         (log/infof "No LIMIT clause found or unsupported position in native SQL: %s" native-sql)
+                                         native-sql))]
+                       (assoc-in query [:native :query] modified-sql))
+                  (let [processed-query (parent-method driver query)]
+                       (log/infof "Preprocessed Firebird MBQL query: %s" processed-query)
+                       processed-query))))
 
 ;; Substring support
 (defmethod sql.qp/->honeysql [:firebird :substring]
