@@ -38,3 +38,29 @@ cd metabase-firebird-driver
 ./build.sh
 ```
 * The driver will now be built. The .jar file can be found in the `target` directory.
+
+* Windows Development
+
+Under WSL after cloning the metabase project and installing clojure and yarn set up your ```~/.clojure.edn```
+
+```edn
+{
+  :aliases {
+    ;; Add cross-project aliases here
+    ;; ~/.clojure/deps.edn
+    :user/firebird-driver {
+      :extra-deps {metabase/firebird-driver {:local/root "../metabase-firebird-driver"}}
+      :jvm-opts   ["-Dmb.dev.additional.driver.manifest.paths=../metabase-firebird-driver/resources/metabase-plugin.yaml"]
+    }
+  }
+}
+
+```
+
+Run a development environment
+```bash
+clojure -M:user/firebird-driver:nrepl --bind 0.0.0.0 --port 50605
+```
+```bash
+clojure -M:user/firebird-driver:run
+```
