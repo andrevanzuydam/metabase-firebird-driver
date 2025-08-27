@@ -25,12 +25,12 @@
 (driver/register! :firebird, :parent :sql-jdbc)
 
 (defmethod sql-jdbc.conn/connection-details->spec :firebird
-           [_driver {:keys [user password db host port]
-                     :or   {user "sysdba", password "masterkey", db "", port 3050, host "localhost"}
+           [_driver {:keys [user password dbname host port]
+                     :or   {user "sysdba", password "masterkey", dbname "", port 3050, host "localhost"}
                      :as   details}]
            (-> {:classname   "org.firebirdsql.jdbc.FBDriver"
                 :subprotocol "firebirdsql"
-                :subname     (str "//" host ":" port "/" db)
+                :subname     (str "//" host ":" port "/" dbname)
                 :user user
                 :password password}
                (sql-jdbc.common/handle-additional-options details)))
