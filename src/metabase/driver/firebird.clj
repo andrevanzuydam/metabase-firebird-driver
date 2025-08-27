@@ -24,7 +24,6 @@
 
 (driver/register! :firebird, :parent :sql-jdbc)
 
-;; Connection details
 (defmethod sql-jdbc.conn/connection-details->spec :firebird
            [_driver {:keys [user password db host port]
                      :or   {user "sysdba", password "masterkey", db "", port 3050, host "localhost"}
@@ -36,18 +35,15 @@
                 :password password}
                (sql-jdbc.common/handle-additional-options details)))
 
-;; Honey SQL version
 (defmethod sql.qp/honey-sql-version :firebird
            [_driver]
            2)
 
-;; Connection test
 (defmethod driver/can-connect? :firebird
            [driver details]
            (let [connection (sql-jdbc.conn/connection-details->spec driver details)]
                 (= 1 (first (vals (first (jdbc/query connection ["SELECT 1 FROM RDB$DATABASE"])))))))
 
-;; Supported features
 (doseq [[feature supported?] {; supported
                               :basic-aggregations                      true
                               :expression-aggregations                 true
@@ -62,7 +58,6 @@
                               :set-timezone                            false}]
        (defmethod driver/database-supports? [:firebird feature] [_driver _feature _db] supported?))
 
-;; Schema syncing
 (defmethod driver/describe-database :firebird
            [driver database]
            (try
@@ -207,26 +202,38 @@
               :order-by [:table-name :database-position]}
              :dialect (sql.qp/quote-style driver)))
 
-
 (defn- firebird-format [query]
        (log/debugf "Formatting Firebird query with map: %s" query)
-       (let [query (cond-> query
-                           (:firebird-limit query) (dissoc :firebird-limit :limit)
-                           (:firebird-page query) (dissoc :firebird-page :limit :offset))
+       (let [limit (when (:limit query) (second (:limit query)))
+             offset (when (:offset query) (second (:offset query)))
+             query (cond-> query
+                           (:limit query) (dissoc :limit)
+                           (:offset query) (dissoc :offset))
              [sql & params] (try
-                              (hsql/format query :dialect :ansi :quoting :ansi)
+                              (hsql/format query :dialect :ansi :quoting :ansi :allow-dashed-names true)
                               (catch Exception e
                                 (log/errorf "Error in hsql/format: %s, query map: %s" (.getMessage e) query)
                                 (throw (ex-info (str "Error in hsql/format: " (.getMessage e))
                                                 {:query query} e))))
-             clean-sql (str/replace sql #"(?m)^\s*--.*$|(?m)--.*?(?=\n|$)" "")]
-            (log/debugf "Generated Firebird SQL: %s, params: %s" clean-sql params)
+             clean-sql (-> sql
+                           (str/replace #"(?m)^\s*--.*$|(?m)--.*?(?=\n|$)" "")
+                           (str/trim))
+             modified-sql (cond
+                            (and limit offset)
+                            (str/replace-first clean-sql #"\bSELECT\b" (str "SELECT FIRST " limit " SKIP " offset))
+                            limit
+                            (str/replace-first clean-sql #"\bSELECT\b" (str "SELECT FIRST " limit))
+                            offset
+                            (str/replace-first clean-sql #"\bSELECT\b" (str "SELECT SKIP " offset))
+                            :else
+                            clean-sql)]
+            (log/debugf "Generated Firebird SQL: %s, params: %s" modified-sql params)
             (try
-              [clean-sql params]
+              (into [modified-sql] params)
               (catch Exception e
-                (log/errorf "Error formatting Firebird query: %s, query map: %s, SQL: %s, params: %s" (.getMessage e) query clean-sql params)
+                (log/errorf "Error formatting Firebird query: %s, query map: %s, SQL: %s, params: %s" (.getMessage e) query modified-sql params)
                 (throw (ex-info (str "Error formatting Firebird query: " (.getMessage e))
-                                {:query query :sql clean-sql :params params} e))))))
+                                {:query query :sql modified-sql :params params} e))))))
 
 (defmethod sql.qp/format-honeysql :firebird
            [driver query]
@@ -247,16 +254,17 @@
                        (cons clean-sql params)))))
 
 (defmethod sql.qp/apply-top-level-clause [:firebird :limit]
-           [driver _ honeysql-query {value :limit}]
+           [_driver _ honeysql-query {value :limit}]
            {:pre [(pos-int? value)]}
-           (log/warnf "Ignoring limit clause (%d) for Firebird driver: %s, as limit handling is disabled for testing" value driver)
-           honeysql-query)
+           (assoc honeysql-query :limit [:raw value]))
 
 (defmethod sql.qp/apply-top-level-clause [:firebird :page]
-           [driver _ honeysql-query {{:keys [items page]} :page}]
+           [_driver _ honeysql-query {{:keys [items page]} :page}]
            {:pre [(pos-int? items) (pos-int? page)]}
-           (log/warnf "Ignoring page clause (items=%d, page=%d) for Firebird driver: %s, as page handling is disabled for testing" items page driver)
-           honeysql-query)
+           (let [offset (* (dec page) items)]
+                (-> honeysql-query
+                    (assoc :limit [:raw items])
+                    (assoc :offset [:raw offset]))))
 
 (defmethod sql.qp/preprocess :firebird
            [driver query]
@@ -274,7 +282,7 @@
                                             (log/debugf "Preprocessed Firebird native SQL: %s -> %s" native-sql modified)
                                             modified)
                                        (re-find #"\bLIMIT\s+(\d+)\b\s*(?:;)?$" normalized-sql)
-                                       (let [limit-num (second (re-find #"\bLIMIT\s+(\d+)\b\s*(?:;)?$" normalized-sql))
+                                       (let [limit-num (second (re-find #"\bLIMIT\s+\d+\b\s*(?:;)?$" normalized-sql))
                                              without-limit (str/replace normalized-sql #"\bLIMIT\s+\d+\b\s*(?:;)?$" "")
                                              modified (str/replace-first without-limit #"\bSELECT\b" (str "SELECT FIRST " limit-num))]
                                             (log/debugf "Preprocessed Firebird native SQL: %s -> %s" native-sql modified)
@@ -288,7 +296,6 @@
                        (log/infof "Preprocessed Firebird MBQL query: %s" processed-query)
                        processed-query))))
 
-;; Substring support
 (defmethod sql.qp/->honeysql [:firebird :substring]
            [driver [_ arg start length]]
            (let [col-name (sql.qp/->honeysql driver arg)]
@@ -296,7 +303,6 @@
                   [:substring col-name [:raw (str "FROM " (sql.qp/->honeysql driver start) " FOR " (sql.qp/->honeysql driver length))]]
                   [:substring col-name [:raw (str "FROM " (sql.qp/->honeysql driver start))]])))
 
-;; Date handling
 (defmethod sql.qp/date [:firebird :default] [_ _ expr] expr)
 (defmethod sql.qp/date [:firebird :minute] [_ _ expr] (hx/cast :TIMESTAMP [:dateadd :minute 0 expr]))
 (defmethod sql.qp/date [:firebird :minute-of-hour] [_ _ expr] [:extract :MINUTE expr])
@@ -314,26 +320,21 @@
 (defmethod sql.qp/date [:firebird :quarter-of-year] [_ _ expr] (hx/+ (hx// (hx/- [:extract :MONTH expr] 1) 3) 1))
 (defmethod sql.qp/date [:firebird :year] [_ _ expr] [:extract :YEAR expr])
 
-;; Boolean handling
 (defmethod sql.qp/->honeysql [:firebird Boolean] [_ bool] (if bool 1 0))
 
-;; Interval handling
 (defmethod sql.qp/add-interval-honeysql-form :firebird
            [driver hsql-form amount unit]
            (if (= unit :quarter)
              (recur driver hsql-form (hx/* amount 3) :month)
              [:dateadd [:raw (name unit)] amount hsql-form]))
 
-;; Current timestamp
 (defmethod sql.qp/current-datetime-honeysql-form :firebird [_]
            (hx/cast :timestamp (hx/literal :now)))
 
-;; Standard deviation
 (defmethod sql.qp/->honeysql [:firebird :stddev]
            [driver [_ field]]
            [:stddev_samp (sql.qp/->honeysql driver field)])
 
-;; Date/time conversions
 (defn- zero-time? [t]
        (= (t/local-time t) (t/local-time 0)))
 
