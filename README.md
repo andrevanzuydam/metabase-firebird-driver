@@ -6,7 +6,7 @@ This driver enables metabase to connect to [FirebirdSQL](https://firebirdsql.org
 
 * Make sure you have installed a recent Metabase Version.
 * Download the [latest release](https://github.com/evosec/metabase-firebird-driver/releases/latest) of the Firebird driver or [build it from source](#building-from-source).
-* Create the `plugins` directory if it doesn't already exist. By default that directory is next to the metabase.jar file, but you can specify a different directory by setting the environment varianble `MB_PLUGINS_DIR`. 
+* Create the `plugins` directory if it doesn't already exist. By default that directory is next to the metabase.jar file, but you can specify a different directory by setting the environment varianble `MB_PLUGINS_DIR`.
 * Just drop the `firebird.metabase-driver.jar` in the plugins directory. On startup, metabase will load the plugin and the driver should be available.
 
 ## Authentication issues when using Legacy_Auth
@@ -39,7 +39,7 @@ cd metabase-firebird-driver
 ```
 * The driver will now be built. The .jar file can be found in the `target` directory.
 
-* Windows Development
+* Development
 
 Under WSL after cloning the metabase project and installing clojure and yarn set up your ```~/.clojure.edn```
 
@@ -64,3 +64,9 @@ clojure -M:user/firebird-driver:nrepl --bind 0.0.0.0 --port 50605
 ```bash
 clojure -M:user/firebird-driver:run
 ```
+
+* Release notes
+
+Current version is 1.6.1
+Added ability to use a connection string
+Has fixes for group by, complex date handling

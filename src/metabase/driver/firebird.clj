@@ -25,9 +25,17 @@
 (driver/register! :firebird, :parent :sql-jdbc)
 
 (defmethod sql-jdbc.conn/connection-details->spec :firebird
-           [_driver {:keys [user password dbname host port conn-uri use-conn-uri]
-                     :or   {user "sysdba" password "masterkey" dbname "" port 3050 host "localhost"}
+           [_driver {:keys [user pass dbname host port conn-uri use-conn-uri]
+                     :or   {user "sysdba" pass "masterkey" dbname "" port 3050 host "localhost"}
                      :as   details}]
+           (log/infof "Firebird connection details: user=%s, password=%s, host=%s, port=%s, dbname=%s, use-conn-uri=%s, conn-uri=%s"
+                      user
+                      (if (str/blank? pass) "<empty>" "<provided>")
+                      host
+                      port
+                      dbname
+                      use-conn-uri
+                      (if use-conn-uri conn-uri "<not-used>"))
            (if (and use-conn-uri (not-empty conn-uri))
              (let [url (java.net.URL. (str/replace-first conn-uri "jdbc:firebirdsql:" "http:"))
                    host (.getHost url)
@@ -42,12 +50,16 @@
                        :subprotocol "firebirdsql"
                        :subname     (str "//" host ":" port "/" dbname)}
                       (sql-jdbc.common/handle-additional-options details)))
-             (-> {:classname   "org.firebirdsql.jdbc.FBDriver"
-                  :subprotocol "firebirdsql"
-                  :subname     (str "//" host ":" port "/" dbname)
-                  :user        user
-                  :password    password}
-                 (sql-jdbc.common/handle-additional-options details))))
+             (do
+               (when (or (str/blank? user) (str/blank? pass))
+                     (throw (ex-info "Invalid Firebird credentials: username and password must be non-empty."
+                                     {:user user :password (if (str/blank? pass) "<empty>" "<provided>")})))
+               (-> {:classname   "org.firebirdsql.jdbc.FBDriver"
+                    :subprotocol "firebirdsql"
+                    :subname     (str "//" host ":" port "/" dbname)
+                    :user        user
+                    :password    (or pass "")}
+                   (sql-jdbc.common/handle-additional-options details)))))
 
 (defmethod sql.qp/honey-sql-version :firebird
            [_driver]
@@ -55,6 +67,14 @@
 
 (defmethod driver/can-connect? :firebird
            [driver details]
+           (log/infof "Firebird can-connect? details: user=%s, password=%s, host=%s, port=%s, dbname=%s, use-conn-uri=%s, conn-uri=%s"
+                       (:user details)
+                       (if (str/blank? (:password details)) "<empty>" "<provided>")
+                       (:host details)
+                       (:port details)
+                       (:dbname details)
+                       (:use-conn-uri details)
+                       (if (:use-conn-uri details) (:conn-uri details) "<not-used>"))
            (let [connection (sql-jdbc.conn/connection-details->spec driver details)]
                 (= 1 (first (vals (first (jdbc/query connection ["SELECT 1 FROM RDB$DATABASE"])))))))
 
