@@ -25,15 +25,29 @@
 (driver/register! :firebird, :parent :sql-jdbc)
 
 (defmethod sql-jdbc.conn/connection-details->spec :firebird
-           [_driver {:keys [user password dbname host port]
-                     :or   {user "sysdba", password "masterkey", dbname "", port 3050, host "localhost"}
-                     :as   details}]
-           (-> {:classname   "org.firebirdsql.jdbc.FBDriver"
-                :subprotocol "firebirdsql"
-                :subname     (str "//" host ":" port "/" dbname)
-                :user user
-                :password password}
-               (sql-jdbc.common/handle-additional-options details)))
+           [_driver {:keys [user password dbname host port conn-uri use-conn-uri]
+                     :or {user "sysdba" password "masterkey" dbname "" port 3050 host "localhost"}
+                     :as details}]
+           (if (and use-conn-uri (not-empty conn-uri))
+             (let [url (java.net.URL. (str/replace-first conn-uri "jdbc:firebirdsql:" "http:"))
+                   host (.getHost url)
+                   port (if (pos? (.getPort url)) (.getPort url) 3050)
+                   dbname (str/replace-first (.getPath url) #"^/" "")
+                   query (.getQuery url)
+                   details (cond-> {:host host
+                                    :port port
+                                    :dbname dbname}
+                                   query (assoc :additional-options query))]
+                  (-> {:classname "org.firebirdsql.jdbc.FBDriver"
+                       :subprotocol "firebirdsql"
+                       :subname (str "//" host ":" port "/" dbname)}
+                      (sql-jdbc.common/handle-additional-options details)))
+             (-> {:classname "org.firebirdsql.jdbc.FBDriver"
+                  :subprotocol "firebirdsql"
+                  :subname (str "//" host ":" port "/" dbname)
+                  :user user
+                  :password password}
+                 (sql-jdbc.common/handle-additional-options details))))
 
 (defmethod sql.qp/honey-sql-version :firebird
            [_driver]
@@ -218,15 +232,19 @@
              clean-sql (-> sql
                            (str/replace #"(?m)^\s*--.*$|(?m)--.*?(?=\n|$)" "")
                            (str/trim))
-             modified-sql (cond
-                            (and limit offset)
-                            (str/replace-first clean-sql #"\bSELECT\b" (str "SELECT FIRST " limit " SKIP " offset))
-                            limit
-                            (str/replace-first clean-sql #"\bSELECT\b" (str "SELECT FIRST " limit))
-                            offset
-                            (str/replace-first clean-sql #"\bSELECT\b" (str "SELECT SKIP " offset))
-                            :else
-                            clean-sql)]
+             modified-sql (-> clean-sql
+                              (str/replace #"(DATEADD)\s*\(\s*\"(year|month|day|hour|minute|second|week|quarter)\"" "$1($2")
+                              (str/replace #"(EXTRACT)\s*\(\s*\"(YEAR|MONTH|DAY|HOUR|MINUTE|SECOND|WEEKDAY|YEARDAY|WEEK|QUARTER)\"" "$1($2")
+                              (str/replace #"(EXTRACT)\s*\(\s*([A-Z]+)\s*,\s*\"from\"\s*,\s*([^)]+)\)" "$1($2 FROM $3)")
+                              (#(cond
+                                  (and limit offset)
+                                  (str/replace-first % #"\bSELECT\b" (str "SELECT FIRST " limit " SKIP " offset))
+                                  limit
+                                  (str/replace-first % #"\bSELECT\b" (str "SELECT FIRST " limit))
+                                  offset
+                                  (str/replace-first % #"\bSELECT\b" (str "SELECT SKIP " offset))
+                                  :else
+                                  %)))]
             (log/debugf "Generated Firebird SQL: %s, params: %s" modified-sql params)
             (try
               (into [modified-sql] params)
@@ -276,7 +294,7 @@
                         normalized-sql (str/replace native-sql #"\s+" " ")
                         modified-sql (cond
                                        (re-find #"\bLIMIT\s+(\d+)\b\s+OFFSET\s+(\d+)\b\s*(?:;)?$" normalized-sql)
-                                       (let [[_ limit-num offset-num] (re-find #"\bLIMIT\s+(\d+)\b\s+OFFSET\s+(\d+)\b\s*(?:;)?$" normalized-sql)
+                                       (let [[_ limit-num offset-num] (re-find #"\bLIMIT\s+\d+\b\s+OFFSET\s+\d+\b\s*(?:;)?$" normalized-sql)
                                              without-limit-offset (str/replace normalized-sql #"\bLIMIT\s+\d+\b\s+OFFSET\s+\d+\b\s*(?:;)?$" "")
                                              modified (str/replace-first without-limit-offset #"\bSELECT\b" (str "SELECT FIRST " limit-num " SKIP " offset-num))]
                                             (log/debugf "Preprocessed Firebird native SQL: %s -> %s" native-sql modified)
@@ -293,8 +311,30 @@
                                          native-sql))]
                        (assoc-in query [:native :query] modified-sql))
                   (let [processed-query (parent-method driver query)]
-                       (log/infof "Preprocessed Firebird MBQL query: %s" processed-query)
-                       processed-query))))
+                       (if (and (:query processed-query) (:aggregation processed-query))
+                         (let [fields (:fields (:query processed-query))
+                               group-by (:group-by (:query processed-query))
+                               new-query (if (and fields group-by)
+                                           (let [complex-date-fields (filter #(and (vector? %) (#{:dateadd :extract} (first %)) (some #{:raw} (flatten %))) fields)
+                                                 field-aliases (map #(vector (keyword (str "field_" (hash %))) %) complex-date-fields)
+                                                 cte-def (map (fn [[alias expr]] [alias expr]) field-aliases)
+                                                 cte-name :date_group
+                                                 new-select (map first field-aliases)
+                                                 new-group-by new-select
+                                                 new-order-by (or (:order-by (:query processed-query)) new-select)]
+                                                (assoc processed-query :query
+                                                       {:with [[cte-name {:select cte-def :from [(:source-table (:query processed-query))]}]]
+                                                        :select (concat new-select (filter #(not (some (fn [f] (= f %)) complex-date-fields)) fields))
+                                                        :from [cte-name]
+                                                        :group-by new-group-by
+                                                        :order-by new-order-by}))
+                                           processed-query)]
+                              (do
+                                (log/infof "Preprocessed Firebird MBQL query with CTE for parameterized date expressions: %s" new-query)
+                                new-query))
+                         (do
+                           (log/infof "Preprocessed Firebird MBQL query: %s" processed-query)
+                           processed-query))))))
 
 (defmethod sql.qp/->honeysql [:firebird :substring]
            [driver [_ arg start length]]
@@ -304,21 +344,66 @@
                   [:substring col-name [:raw (str "FROM " (sql.qp/->honeysql driver start))]])))
 
 (defmethod sql.qp/date [:firebird :default] [_ _ expr] expr)
-(defmethod sql.qp/date [:firebird :minute] [_ _ expr] (hx/cast :TIMESTAMP [:dateadd :minute 0 expr]))
-(defmethod sql.qp/date [:firebird :minute-of-hour] [_ _ expr] [:extract :MINUTE expr])
-(defmethod sql.qp/date [:firebird :hour] [_ _ expr] (hx/cast :TIMESTAMP [:dateadd :hour 0 expr]))
-(defmethod sql.qp/date [:firebird :hour-of-day] [_ _ expr] [:extract :HOUR expr])
-(defmethod sql.qp/date [:firebird :day] [_ _ expr] (hx/cast :DATE expr))
-(defmethod sql.qp/date [:firebird :day-of-week] [_ _ expr] (hx/+ [:extract :WEEKDAY (hx/cast :DATE expr)] 1))
-(defmethod sql.qp/date [:firebird :day-of-month] [_ _ expr] [:extract :DAY expr])
-(defmethod sql.qp/date [:firebird :day-of-year] [_ _ expr] (hx/+ [:extract :YEARDAY expr] 1))
-(defmethod sql.qp/date [:firebird :week] [_ _ expr] [:dateadd [:raw "DAY"] (hx/- 0 [:extract :WEEKDAY (hx/cast :DATE expr)]) (hx/cast :DATE expr)])
-(defmethod sql.qp/date [:firebird :week-of-year] [_ _ expr] [:extract :WEEK expr])
-(defmethod sql.qp/date [:firebird :month] [_ _ expr] (hx/cast :DATE [:dateadd :month 0 [:dateadd :day (hx/- 1 [:extract :DAY expr]) expr]]))
-(defmethod sql.qp/date [:firebird :month-of-year] [_ _ expr] [:extract :MONTH expr])
-(defmethod sql.qp/date [:firebird :quarter] [_ _ expr] [:dateadd [:raw "MONTH"] (hx/* (hx// (hx/- [:extract :MONTH expr] 1) 3) 3) (hx/cast :DATE [:dateadd :month 0 [:dateadd :day (hx/- 1 [:extract :DAY expr]) expr]])])
-(defmethod sql.qp/date [:firebird :quarter-of-year] [_ _ expr] (hx/+ (hx// (hx/- [:extract :MONTH expr] 1) 3) 1))
-(defmethod sql.qp/date [:firebird :year] [_ _ expr] [:extract :YEAR expr])
+
+(defmethod sql.qp/date [:firebird :minute]
+           [_ _ expr]
+           (hx/cast :TIMESTAMP [:dateadd :minute 0 expr]))
+
+(defmethod sql.qp/date [:firebird :minute-of-hour]
+           [_ _ expr]
+           [:extract :MINUTE :from expr])
+
+(defmethod sql.qp/date [:firebird :hour]
+           [_ _ expr]
+           (hx/cast :TIMESTAMP [:dateadd :hour 0 expr]))
+
+(defmethod sql.qp/date [:firebird :hour-of-day]
+           [_ _ expr]
+           [:extract :HOUR :from expr])
+
+(defmethod sql.qp/date [:firebird :day]
+           [_ _ expr]
+           (hx/cast :DATE expr))
+
+(defmethod sql.qp/date [:firebird :day-of-week]
+           [_ _ expr]
+           (hx/+ [:extract :WEEKDAY :from (hx/cast :DATE expr)] 1))
+
+(defmethod sql.qp/date [:firebird :day-of-month]
+           [_ _ expr]
+           [:extract :DAY :from expr])
+
+(defmethod sql.qp/date [:firebird :day-of-year]
+           [_ _ expr]
+           (hx/+ [:extract :YEARDAY :from expr] 1))
+
+(defmethod sql.qp/date [:firebird :week]
+           [_ _ expr]
+           [:dateadd :day (hx/- 0 [:extract :WEEKDAY :from (hx/cast :DATE expr)]) (hx/cast :DATE expr)])
+
+(defmethod sql.qp/date [:firebird :week-of-year]
+           [_ _ expr]
+           [:extract :WEEK :from expr])
+
+(defmethod sql.qp/date [:firebird :month]
+           [_ _ expr]
+           (hx/cast :DATE [:dateadd :month 0 [:dateadd :day (hx/- 1 [:extract :DAY :from expr]) expr]]))
+
+(defmethod sql.qp/date [:firebird :month-of-year]
+           [_ _ expr]
+           [:extract :MONTH :from expr])
+
+(defmethod sql.qp/date [:firebird :quarter]
+           [_ _ expr]
+           [:dateadd :month (hx/* (hx// (hx/- [:extract :MONTH :from expr] 1) 3) 3) (hx/cast :DATE [:dateadd :month 0 [:dateadd :day (hx/- 1 [:extract :DAY :from expr]) expr]])])
+
+(defmethod sql.qp/date [:firebird :quarter-of-year]
+           [_ _ expr]
+           (hx/+ (hx// (hx/- [:extract :MONTH :from expr] 1) 3) 1))
+
+(defmethod sql.qp/date [:firebird :year]
+           [_ _ expr]
+           [:extract :YEAR :from expr])
 
 (defmethod sql.qp/->honeysql [:firebird Boolean] [_ bool] (if bool 1 0))
 

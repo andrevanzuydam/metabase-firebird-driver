@@ -8,19 +8,40 @@ driver:
   lazy-load: true
   parent: sql-jdbc
   connection-properties:
-    - host
+    - name: use-conn-uri
+      type: boolean
+      display-name: Use a connection string
+      default: false
+    - name: conn-uri
+      display-name: Connection String
+      placeholder: "jdbc:firebirdsql://localhost:3050/BirdsOfTheWorld?user=sysdba&password=masterkey"
+      required: false
+      visible-if:
+        use-conn-uri: true
+    - merge:
+        - host
+        - visible-if:
+            use-conn-uri: false
+          required: true
+    - merge:
+        - dbname
+        - visible-if:
+            use-conn-uri: false
     - merge:
         - port
         - placeholder: 3050
-    - merge:
-        - dbname
-        - placeholder: BirdsOfTheWorld
+          visible-if:
+            use-conn-uri: false
     - merge:
         - user
-        - required: true
+        - required: false
+          visible-if:
+            use-conn-uri: false
     - merge:
         - password
-        - required: true
+        - name: pass
+          visible-if:
+            use-conn-uri: false
     - merge:
         - additional-options
         - placeholder: "blobBufferSize=2048"
