@@ -314,12 +314,6 @@
                     (assoc :limit [:raw items])
                     (assoc :offset [:raw offset]))))
 
-(ns metabase.driver.firebird
-    (:require [clojure.string :as str]
-      [metabase.util.honey-sql-2 :as hx]
-      [metabase.util.log :as log]
-      [metabase.driver.sql.query-processor :as sql.qp]))
-
 (defn- handle-native-sql
        "Transforms native SQL queries by converting LIMIT and OFFSET clauses to Firebird's FIRST and SKIP syntax."
        [native-query]
@@ -341,6 +335,16 @@
             (log/debugf "Transformed native SQL: %s -> %s" native-sql modified-sql)
             (assoc-in native-query [:native :query] modified-sql)))
 
+(defmethod sql.qp/->honeysql [:firebird :field]
+           [driver [_ field-id opts :as field]]
+           (let [metadata-provider (metabase.query-processor.store/metadata-provider)
+                 table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "source")
+                 table-name (if (integer? table-id)
+                              (:name (metabase.lib.metadata/table metadata-provider table-id))
+                              (str table-id))
+                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias]) "field")]
+                (hx/identifier :field table-name field-alias)))
+
 (defn- build-cte-for-complex-exprs
        [driver group-by table-alias processed-query]
        (let [has-complex-expr? (fn [expr]
@@ -361,19 +365,19 @@
                                                   field-expr (hx/identifier :field table-alias field-alias)
                                                   [new-expr base-type database-type] (if temporal-unit
                                                                                        (case temporal-unit
-                                                                                             :minute [[:cast [:dateadd :minute 0 field-expr] :TIMESTAMP] :type/DateTime "TIMESTAMP"]
+                                                                                             :minute [[:lift {:database-type "TIMESTAMP"} [:cast [:dateadd :minute 0 field-expr] :TIMESTAMP]] :type/DateTime "TIMESTAMP"]
                                                                                              :minute-of-hour [[:extract :MINUTE :from field-expr] :type/Integer "INTEGER"]
-                                                                                             :hour [[:cast [:dateadd :hour 0 field-expr] :TIMESTAMP] :type/DateTime "TIMESTAMP"]
+                                                                                             :hour [[:lift {:database-type "TIMESTAMP"} [:cast [:dateadd :hour 0 field-expr] :TIMESTAMP]] :type/DateTime "TIMESTAMP"]
                                                                                              :hour-of-day [[:extract :HOUR :from field-expr] :type/Integer "INTEGER"]
-                                                                                             :day [[:cast field-expr :DATE] :type/Date "DATE"]
+                                                                                             :day [[:lift {:database-type "DATE"} [:cast field-expr :DATE]] :type/Date "DATE"]
                                                                                              :day-of-week [[:+ [:extract :WEEKDAY :from [:cast field-expr :DATE]] [:inline 1]] :type/Integer "INTEGER"]
                                                                                              :day-of-month [[:extract :DAY :from field-expr] :type/Integer "INTEGER"]
                                                                                              :day-of-year [[:+ [:extract :YEARDAY :from field-expr] [:inline 1]] :type/Integer "INTEGER"]
-                                                                                             :week [[:dateadd :day [:- 0 [:extract :WEEKDAY :from [:cast field-expr :DATE]]] [:cast field-expr :DATE]] :type/Date "DATE"]
+                                                                                             :week [[:lift {:database-type "DATE"} [:dateadd :day [:- 0 [:extract :WEEKDAY :from [:cast field-expr :DATE]]] [:cast field-expr :DATE]]] :type/Date "DATE"]
                                                                                              :week-of-year [[:extract :WEEK :from field-expr] :type/Integer "INTEGER"]
-                                                                                             :month [[:cast [:dateadd :month 0 [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] field-expr]] :DATE] :type/Date "DATE"]
+                                                                                             :month [[:lift {:database-type "DATE"} [:cast [:dateadd :month 0 [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] field-expr]] :DATE]] :type/Date "DATE"]
                                                                                              :month-of-year [[:extract :MONTH :from field-expr] :type/Integer "INTEGER"]
-                                                                                             :quarter [[:dateadd :month [:* [:/ [:- [:extract :MONTH :from field-expr] [:inline 1]] 3] 3] [:cast [:dateadd :month 0 [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] field-expr]] :DATE]] :type/Date "DATE"]
+                                                                                             :quarter [[:lift {:database-type "DATE"} [:dateadd :month [:* [:/ [:- [:extract :MONTH :from field-expr] [:inline 1]] [:inline 3]] 3] [:cast [:dateadd :month 0 [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] field-expr]] :DATE]]] :type/Date "DATE"]
                                                                                              :quarter-of-year [[[:+ [:/ [:- [:extract :MONTH :from field-expr] [:inline 1]] [:inline 3]] [:inline 1]]] :type/Integer "INTEGER"]
                                                                                              :year [[:extract :YEAR :from field-expr] :type/Integer "INTEGER"])
                                                                                        [expr nil nil])]
@@ -449,6 +453,7 @@
                   (do
                     (log/infof "Preprocessed Firebird MBQL query: %s" processed-query)
                     (process-mbql-query driver processed-query)))))
+
 
 
 (defmethod sql.qp/->honeysql [:firebird :substring]
