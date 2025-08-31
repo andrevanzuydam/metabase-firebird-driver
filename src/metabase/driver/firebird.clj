@@ -26,27 +26,27 @@
 
 (defmethod sql-jdbc.conn/connection-details->spec :firebird
            [_driver {:keys [user password dbname host port conn-uri use-conn-uri]
-                     :or {user "sysdba" password "masterkey" dbname "" port 3050 host "localhost"}
-                     :as details}]
+                     :or   {user "sysdba" password "masterkey" dbname "" port 3050 host "localhost"}
+                     :as   details}]
            (if (and use-conn-uri (not-empty conn-uri))
              (let [url (java.net.URL. (str/replace-first conn-uri "jdbc:firebirdsql:" "http:"))
                    host (.getHost url)
                    port (if (pos? (.getPort url)) (.getPort url) 3050)
                    dbname (str/replace-first (.getPath url) #"^/" "")
                    query (.getQuery url)
-                   details (cond-> {:host host
-                                    :port port
+                   details (cond-> {:host   host
+                                    :port   port
                                     :dbname dbname}
                                    query (assoc :additional-options query))]
-                  (-> {:classname "org.firebirdsql.jdbc.FBDriver"
+                  (-> {:classname   "org.firebirdsql.jdbc.FBDriver"
                        :subprotocol "firebirdsql"
-                       :subname (str "//" host ":" port "/" dbname)}
+                       :subname     (str "//" host ":" port "/" dbname)}
                       (sql-jdbc.common/handle-additional-options details)))
-             (-> {:classname "org.firebirdsql.jdbc.FBDriver"
+             (-> {:classname   "org.firebirdsql.jdbc.FBDriver"
                   :subprotocol "firebirdsql"
-                  :subname (str "//" host ":" port "/" dbname)
-                  :user user
-                  :password password}
+                  :subname     (str "//" host ":" port "/" dbname)
+                  :user        user
+                  :password    password}
                  (sql-jdbc.common/handle-additional-options details))))
 
 (defmethod sql.qp/honey-sql-version :firebird
@@ -59,17 +59,17 @@
                 (= 1 (first (vals (first (jdbc/query connection ["SELECT 1 FROM RDB$DATABASE"])))))))
 
 (doseq [[feature supported?] {; supported
-                              :basic-aggregations                      true
-                              :expression-aggregations                 true
-                              :foreign-keys                            true
-                              :nested-queries                          true
-                              :standard-deviation-aggregations         true
+                              :basic-aggregations                     true
+                              :expression-aggregations                true
+                              :foreign-keys                           true
+                              :nested-queries                         true
+                              :standard-deviation-aggregations        true
                               ; not supported
-                              :schemas                                 false
-                              :binning                                 false
-                              :case-sensitivity-string-filter-options  false
-                              :nested-fields                           false
-                              :set-timezone                            false}]
+                              :schemas                                false
+                              :binning                                false
+                              :case-sensitivity-string-filter-options false
+                              :nested-fields                          false
+                              :set-timezone                           false}]
        (defmethod driver/database-supports? [:firebird feature] [_driver _feature _db] supported?))
 
 (defmethod driver/describe-database :firebird
@@ -86,7 +86,7 @@
                         {:tables
                          (into #{}
                                (map (fn [row]
-                                        {:name (str/trim (:name row))
+                                        {:name   (str/trim (:name row))
                                          :schema nil}))
                                result)})))
              (catch Exception e
@@ -94,24 +94,24 @@
 
 (def ^:private database-type->base-type
   (sql-jdbc.sync/pattern-based-database-type->base-type
-    [[#"INT64"            :type/BigInteger]
-     [#"DECIMAL"          :type/Decimal]
-     [#"FLOAT"            :type/Float]
-     [#"BLOB"             :type/*]
-     [#"INTEGER"          :type/Integer]
-     [#"NUMERIC"          :type/Decimal]
-     [#"DOUBLE"           :type/Float]
-     [#"SMALLINT"         :type/Integer]
-     [#"CHAR"             :type/Text]
-     [#"BIGINT"           :type/BigInteger]
-     [#"TIMESTAMP"        :type/DateTime]
-     [#"DATE"             :type/Date]
-     [#"TIME"             :type/Time]
-     [#"BLOB SUB_TYPE 0"  :type/*]
-     [#"BLOB SUB_TYPE 1"  :type/Text]
+    [[#"INT64" :type/BigInteger]
+     [#"DECIMAL" :type/Decimal]
+     [#"FLOAT" :type/Float]
+     [#"BLOB" :type/*]
+     [#"INTEGER" :type/Integer]
+     [#"NUMERIC" :type/Decimal]
+     [#"DOUBLE" :type/Float]
+     [#"SMALLINT" :type/Integer]
+     [#"CHAR" :type/Text]
+     [#"BIGINT" :type/BigInteger]
+     [#"TIMESTAMP" :type/DateTime]
+     [#"DATE" :type/Date]
+     [#"TIME" :type/Time]
+     [#"BLOB SUB_TYPE 0" :type/*]
+     [#"BLOB SUB_TYPE 1" :type/Text]
      [#"BLOB SUB_TYPE TEXT" :type/Text]
      [#"DOUBLE PRECISION" :type/Float]
-     [#"BOOLEAN"          :type/Boolean]]))
+     [#"BOOLEAN" :type/Boolean]]))
 
 (defmethod sql-jdbc.sync/database-type->base-type :firebird
            [_ column-type]
@@ -149,70 +149,70 @@
                                                 "FROM RDB$RELATION_FIELDS rf "
                                                 "JOIN RDB$FIELDS f ON rf.RDB$FIELD_SOURCE = f.RDB$FIELD_NAME "
                                                 "WHERE rf.RDB$RELATION_NAME = ?") name])]
-                      {:name name
+                      {:name   name
                        :schema nil
                        :fields
                        (into #{}
                              (map (fn [row]
-                                      {:name (str/trim (:field_name row))
-                                       :database-type (:database_type row)
-                                       :base-type (sql-jdbc.sync/database-type->base-type :firebird (:database_type row))
+                                      {:name              (str/trim (:field_name row))
+                                       :database-type     (:database_type row)
+                                       :base-type         (sql-jdbc.sync/database-type->base-type :firebird (:database_type row))
                                        :database-position (:position row)
                                        :database-required (not (:nullable row))
-                                       :pk? (:pk row)}))
+                                       :pk?               (:pk row)}))
                              result)}))))
 
 (defmethod sql-jdbc.sync/describe-fields-sql :firebird
            [driver & {:keys [table-names]}]
            (hsql/format
-             {:select [[:%trim.rf.rdb$field_name :name]
-                       [(hsql/call :case
-                                   [:= :f.rdb$field_type 7] "SMALLINT"
-                                   [:= :f.rdb$field_type 8] "INTEGER"
-                                   [:= :f.rdb$field_type 10] "FLOAT"
-                                   [:= :f.rdb$field_type 12] "DATE"
-                                   [:= :f.rdb$field_type 13] "TIME"
-                                   [:= :f.rdb$field_type 14] "CHAR"
-                                   [:= :f.rdb$field_type 16] "BIGINT"
-                                   [:= :f.rdb$field_type 27] "DOUBLE PRECISION"
-                                   [:= :f.rdb$field_type 35] "TIMESTAMP"
-                                   [:= :f.rdb$field_type 37] "VARCHAR"
-                                   [:= :f.rdb$field_type 261] "BLOB SUB_TYPE TEXT"
-                                   :else "UNKNOWN") :database-type]
-                       [:- :rf.rdb$field_position [:inline 1] :database-position]
-                       [:null :table-schema]
-                       [:rf.rdb$relation_name :table-name]
-                       [(hsql/call :exists
-                                   {:select [:inline 1]
-                                    :from [:rdb$relation_constraints :rc]
-                                    :join [:rdb$index_segments :idx
-                                           [:= :rc.rdb$index_name :idx.rdb$index_name]]
-                                    :where [:and
-                                            [:= :rc.rdb$constraint_type "PRIMARY KEY"]
-                                            [:= :rc.rdb$relation_name :rf.rdb$relation_name]
-                                            [:= :idx.rdb$field_name :rf.rdb$field_name]]})
-                        :pk?]
-                       [:null :field-comment]
-                       [(hsql/call :case
-                                   [:= :rf.rdb$null_flag 1] false
-                                   :else true) :database-required]
-                       [(hsql/call :exists
-                                   {:select [:inline 1]
-                                    :from [:rdb$triggers :t]
-                                    :join [:rdb$dependencies :d
-                                           [:= :t.rdb$trigger_name :d.rdb$dependent_name]]
-                                    :where [:and
-                                            [:= :t.rdb$relation_name :rf.rdb$relation_name]
-                                            [:= :d.rdb$field_name :rf.rdb$field_name]
-                                            [:= :t.rdb$trigger_type 1]
-                                            [:like :t.rdb$trigger_source "%GEN_ID%"]]})
-                        :database-is-auto-increment]]
-              :from [[:rdb$relation_fields :rf]]
-              :join [[:rdb$fields :f] [:= :rf.rdb$field_source :f.rdb$field_name]]
-              :where [:and
-                      [:not-like :rf.rdb$relation_name [:inline "RDB$%"]]
-                      [:not-like :rf.rdb$relation_name [:inline "MON$%"]]
-                      (when table-names [:in :rf.rdb$relation_name table-names])]
+             {:select   [[:%trim.rf.rdb$field_name :name]
+                         [(hsql/call :case
+                                     [:= :f.rdb$field_type 7] "SMALLINT"
+                                     [:= :f.rdb$field_type 8] "INTEGER"
+                                     [:= :f.rdb$field_type 10] "FLOAT"
+                                     [:= :f.rdb$field_type 12] "DATE"
+                                     [:= :f.rdb$field_type 13] "TIME"
+                                     [:= :f.rdb$field_type 14] "CHAR"
+                                     [:= :f.rdb$field_type 16] "BIGINT"
+                                     [:= :f.rdb$field_type 27] "DOUBLE PRECISION"
+                                     [:= :f.rdb$field_type 35] "TIMESTAMP"
+                                     [:= :f.rdb$field_type 37] "VARCHAR"
+                                     [:= :f.rdb$field_type 261] "BLOB SUB_TYPE TEXT"
+                                     :else "UNKNOWN") :database-type]
+                         [:- :rf.rdb$field_position [:inline 1] :database-position]
+                         [:null :table-schema]
+                         [:rf.rdb$relation_name :table-name]
+                         [(hsql/call :exists
+                                     {:select [:inline 1]
+                                      :from   [:rdb$relation_constraints :rc]
+                                      :join   [:rdb$index_segments :idx
+                                               [:= :rc.rdb$index_name :idx.rdb$index_name]]
+                                      :where  [:and
+                                               [:= :rc.rdb$constraint_type "PRIMARY KEY"]
+                                               [:= :rc.rdb$relation_name :rf.rdb$relation_name]
+                                               [:= :idx.rdb$field_name :rf.rdb$field_name]]})
+                          :pk?]
+                         [:null :field-comment]
+                         [(hsql/call :case
+                                     [:= :rf.rdb$null_flag 1] false
+                                     :else true) :database-required]
+                         [(hsql/call :exists
+                                     {:select [:inline 1]
+                                      :from   [:rdb$triggers :t]
+                                      :join   [:rdb$dependencies :d
+                                               [:= :t.rdb$trigger_name :d.rdb$dependent_name]]
+                                      :where  [:and
+                                               [:= :t.rdb$relation_name :rf.rdb$relation_name]
+                                               [:= :d.rdb$field_name :rf.rdb$field_name]
+                                               [:= :t.rdb$trigger_type 1]
+                                               [:like :t.rdb$trigger_source "%GEN_ID%"]]})
+                          :database-is-auto-increment]]
+              :from     [[:rdb$relation_fields :rf]]
+              :join     [[:rdb$fields :f] [:= :rf.rdb$field_source :f.rdb$field_name]]
+              :where    [:and
+                         [:not-like :rf.rdb$relation_name [:inline "RDB$%"]]
+                         [:not-like :rf.rdb$relation_name [:inline "MON$%"]]
+                         (when table-names [:in :rf.rdb$relation_name table-names])]
               :order-by [:table-name :database-position]}
              :dialect (sql.qp/quote-style driver)))
 
@@ -223,12 +223,42 @@
              query (cond-> query
                            (:limit query) (dissoc :limit)
                            (:offset query) (dissoc :offset))
+             group-by (:group-by query)
+             has-complex-expr? (fn [expr]
+                                   (and (coll? expr)
+                                        (some (fn [e]
+                                                  (or (and (coll? e) (#{:dateadd :extract} (first e)))
+                                                      (and (vector? e) (= :raw (first e)) (re-find #"\?" (str (second e))))))
+                                              (tree-seq coll? seq expr))))
+             complex-exprs (when group-by (filter has-complex-expr? group-by))
+             modified-query (if (seq complex-exprs)
+                              (let [cte-aliases (map-indexed (fn [idx _] (keyword (str "field_" idx))) complex-exprs)
+                                    cte-def (map vector cte-aliases complex-exprs)
+                                    cte-name :date_group
+                                    new-select (mapcat (fn [sel]
+                                                           (if (some #(= sel %) complex-exprs)
+                                                             [(some #(when (= sel (second %)) (first %)) (map vector cte-aliases complex-exprs))]
+                                                             [sel]))
+                                                       (:select query))
+                                    new-group-by cte-aliases
+                                    new-order-by (map (fn [clause]
+                                                          (if (some #(= (first clause) %) complex-exprs)
+                                                            [(some #(when (= (first clause) (second %)) (first %)) (map vector cte-aliases complex-exprs)) (second clause)]
+                                                            clause))
+                                                      (or (:order-by query) []))]
+                                   (assoc query
+                                          :with [[cte-name {:select cte-def :from (:from query)}]]
+                                          :select new-select
+                                          :from [cte-name]
+                                          :group-by new-group-by
+                                          :order-by (if (seq new-order-by) new-order-by new-group-by)))
+                              query)
              [sql & params] (try
-                              (hsql/format query :dialect :ansi :quoting :ansi :allow-dashed-names true)
+                              (hsql/format modified-query :dialect :ansi :quoting :ansi :allow-dashed-names true)
                               (catch Exception e
-                                (log/errorf "Error in hsql/format: %s, query map: %s" (.getMessage e) query)
+                                (log/errorf "Error in hsql/format: %s, query map: %s" (.getMessage e) modified-query)
                                 (throw (ex-info (str "Error in hsql/format: " (.getMessage e))
-                                                {:query query} e))))
+                                                {:query modified-query} e))))
              clean-sql (-> sql
                            (str/replace #"(?m)^\s*--.*$|(?m)--.*?(?=\n|$)" "")
                            (str/trim))
@@ -284,57 +314,141 @@
                     (assoc :limit [:raw items])
                     (assoc :offset [:raw offset]))))
 
+(ns metabase.driver.firebird
+    (:require [clojure.string :as str]
+      [metabase.util.honey-sql-2 :as hx]
+      [metabase.util.log :as log]
+      [metabase.driver.sql.query-processor :as sql.qp]))
+
+(defn- handle-native-sql
+       "Transforms native SQL queries by converting LIMIT and OFFSET clauses to Firebird's FIRST and SKIP syntax."
+       [native-query]
+       (let [native-sql (:query (:native native-query))
+             normalized-sql (str/replace native-sql #"\s+" " ")
+             modified-sql (cond
+                            (re-find #"\bLIMIT\s+(\d+)\b\s+OFFSET\s+(\d+)\b\s*(?:;)?$" normalized-sql)
+                            (let [[_ limit-num offset-num] (re-find #"\bLIMIT\s+(\d+)\b\s+OFFSET\s+(\d+)\b\s*(?:;)?$" normalized-sql)
+                                  without-limit-offset (str/replace normalized-sql #"\bLIMIT\s+\d+\b\s+OFFSET\s+\d+\b\s*(?:;)?$" "")
+                                  modified (str/replace-first without-limit-offset #"\bSELECT\b" (str "SELECT FIRST " limit-num " SKIP " offset-num))]
+                                 modified)
+                            (re-find #"\bLIMIT\s+(\d+)\b\s*(?:;)?$" normalized-sql)
+                            (let [[_ limit-num] (re-find #"\bLIMIT\s+(\d+)\b\s*(?:;)?$" normalized-sql)
+                                  without-limit (str/replace normalized-sql #"\bLIMIT\s+\d+\b\s*(?:;)?$" "")
+                                  modified (str/replace-first without-limit #"\bSELECT\b" (str "SELECT FIRST " limit-num))]
+                                 modified)
+                            :else
+                            normalized-sql)]
+            (log/debugf "Transformed native SQL: %s -> %s" native-sql modified-sql)
+            (assoc-in native-query [:native :query] modified-sql)))
+
+(defn- build-cte-for-complex-exprs
+       [driver group-by table-alias processed-query]
+       (let [has-complex-expr? (fn [expr]
+                                   (and (coll? expr)
+                                        (some (fn [e]
+                                                  (or (and (coll? e) (#{:dateadd :extract} (first e)))
+                                                      (and (vector? e) (= :raw (first e)) (re-find #"\?" (str (second e))))))
+                                              (tree-seq coll? seq expr))))
+             complex-exprs (when group-by (filter has-complex-expr? group-by))]
+            (when (seq complex-exprs)
+                  (let [cte-aliases (map-indexed (fn [idx _] (keyword (str "field_" idx))) complex-exprs)
+                        cte-def+types (map-indexed
+                                        (fn [idx expr]
+                                            (let [alias (nth cte-aliases idx)
+                                                  temporal-unit (when (and (vector? expr) (= :field (first expr)))
+                                                                      (get-in expr [2 :temporal-unit]))
+                                                  field-alias (or (get-in (meta expr) [:metabase.query-processor.util.add-alias-info/source-alias]) "DATUM")
+                                                  field-expr (hx/identifier :field table-alias field-alias)
+                                                  [new-expr base-type database-type] (if temporal-unit
+                                                                                       (case temporal-unit
+                                                                                             :minute [[:cast [:dateadd :minute 0 field-expr] :TIMESTAMP] :type/DateTime "TIMESTAMP"]
+                                                                                             :minute-of-hour [[:extract :MINUTE :from field-expr] :type/Integer "INTEGER"]
+                                                                                             :hour [[:cast [:dateadd :hour 0 field-expr] :TIMESTAMP] :type/DateTime "TIMESTAMP"]
+                                                                                             :hour-of-day [[:extract :HOUR :from field-expr] :type/Integer "INTEGER"]
+                                                                                             :day [[:cast field-expr :DATE] :type/Date "DATE"]
+                                                                                             :day-of-week [[:+ [:extract :WEEKDAY :from [:cast field-expr :DATE]] 1] :type/Integer "INTEGER"]
+                                                                                             :day-of-month [[:extract :DAY :from field-expr] :type/Integer "INTEGER"]
+                                                                                             :day-of-year [[:+ [:extract :YEARDAY :from field-expr] 1] :type/Integer "INTEGER"]
+                                                                                             :week [[:dateadd :day [:- 0 [:extract :WEEKDAY :from [:cast field-expr :DATE]]] [:cast field-expr :DATE]] :type/Date "DATE"]
+                                                                                             :week-of-year [[:extract :WEEK :from field-expr] :type/Integer "INTEGER"]
+                                                                                             :month [[:cast [:dateadd :month 0 [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] field-expr]] :DATE] :type/Date "DATE"]
+                                                                                             :month-of-year [[:extract :MONTH :from field-expr] :type/Integer "INTEGER"]
+                                                                                             :quarter [[:dateadd :month [:* [:/ [:- [:extract :MONTH :from field-expr] 1] 3] 3] [:cast [:dateadd :month 0 [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] field-expr]] :DATE]] :type/Date "DATE"]
+                                                                                             :quarter-of-year [[:+ [:/ [:- [:extract :MONTH :from field-expr] 1] 3] 1] :type/Integer "INTEGER"]
+                                                                                             :year [[:extract :YEAR :from field-expr] :type/Integer "INTEGER"])
+                                                                                       [expr nil nil])]
+                                                 [alias new-expr base-type database-type]))
+                                        complex-exprs)
+                        cte-def (map (fn [[alias expr _ _]] [alias expr]) cte-def+types)
+                        cte-name :date_group
+                        new-select (vec (concat
+                                          (mapcat
+                                            (fn [sel]
+                                                (if (some #(= sel %) complex-exprs)
+                                                  [(first (some #(when (= sel (second %)) [(first %) [:metabase.util.honey-sql-2/identifier :field-alias [(or (get-in (meta sel) [:metabase.query-processor.util.add-alias-info/desired-alias]) "DATUM")]]]) (map vector cte-aliases complex-exprs)))]
+                                               [sel]))
+                                            group-by)
+                                          (map
+                                            (fn [agg]
+                                                (let [agg-alias (or (get-in (meta agg) [:metabase.query-processor.util.add-alias-info/desired-alias]) "count")]
+                                                     [(sql.qp/->honeysql driver agg) [:metabase.util.honey-sql-2/identifier :field-alias [agg-alias]]]))
+                                            (get-in processed-query [:query :aggregation]))))
+                        new-group-by cte-aliases
+                        order-by (get-in processed-query [:query :order-by])
+                        new-order-by (cond
+                                       (or (nil? order-by) (keyword? order-by)) new-group-by
+                                       (seq order-by) (map
+                                                        (fn [clause]
+                                                            (if (some #(= (first clause) %) complex-exprs)
+                                                              [(some #(when (= (first clause) (second %)) (first %)) (map vector cte-aliases complex-exprs)) (second clause)]
+                                                              clause))
+                                                        order-by)
+                                       :else new-group-by)
+                        fields-metadata (reduce
+                                          (fn [acc [_ _ base-type database-type]]
+                                              (if (and base-type database-type)
+                                                (conj acc {:base-type base-type :database-type (str/trim database-type)})
+                                                acc))
+                                          []
+                                          cte-def+types)]
+                       {:cte-name        cte-name
+                        :cte-def         cte-def
+                        :new-select      new-select
+                        :new-group-by    new-group-by
+                        :new-order-by    new-order-by
+                        :fields-metadata fields-metadata}))))
+
+(defn- process-mbql-query
+       "Processes MBQL queries with aggregations, generating CTEs for complex date expressions if needed."
+       [driver processed-query]
+       (if (and (:query processed-query) (:aggregation (:query processed-query)))
+         (let [group-by (:group-by (:query processed-query))
+               table-alias (or (-> (:source-table (:query processed-query)) meta :metabase.query-processor.util.add-alias-info/source-alias) "ACCOUNTING_BLNCE_SHEET_REPORT")
+               cte-info (build-cte-for-complex-exprs driver group-by table-alias processed-query)]
+              (if cte-info
+                (let [{:keys [cte-name cte-def new-select new-group-by new-order-by fields-metadata]} cte-info]
+                     (log/infof "Generated CTE for complex date expressions: %s" cte-info)
+                     (assoc-in processed-query [:query]
+                               {:with                                                [[cte-name {:select cte-def :from [[:metabase.util.honey-sql-2/identifier :table [table-alias]]]}]]
+                                :select                                              new-select
+                                :from                                                [cte-name]
+                                :group-by                                            new-group-by
+                                :order-by                                            new-order-by
+                                :metabase.query-processor.util.add-alias-info/fields fields-metadata}))
+                processed-query))
+         processed-query))
+
 (defmethod sql.qp/preprocess :firebird
            [driver query]
            (log/debugf "Preprocessing Firebird query with driver: %s, query: %s" driver query)
-           (let [parent-method (get-method sql.qp/preprocess :sql)]
-                (log/infof "Preprocessed Firebird MBQL query: %s" :sql)
+           (let [parent-method (get-method sql.qp/preprocess :sql)
+                 processed-query (parent-method driver query)]
                 (if (:native query)
-                  (let [native-sql (:query (:native query))
-                        normalized-sql (str/replace native-sql #"\s+" " ")
-                        modified-sql (cond
-                                       (re-find #"\bLIMIT\s+(\d+)\b\s+OFFSET\s+(\d+)\b\s*(?:;)?$" normalized-sql)
-                                       (let [[_ limit-num offset-num] (re-find #"\bLIMIT\s+\d+\b\s+OFFSET\s+\d+\b\s*(?:;)?$" normalized-sql)
-                                             without-limit-offset (str/replace normalized-sql #"\bLIMIT\s+\d+\b\s+OFFSET\s+\d+\b\s*(?:;)?$" "")
-                                             modified (str/replace-first without-limit-offset #"\bSELECT\b" (str "SELECT FIRST " limit-num " SKIP " offset-num))]
-                                            (log/debugf "Preprocessed Firebird native SQL: %s -> %s" native-sql modified)
-                                            modified)
-                                       (re-find #"\bLIMIT\s+(\d+)\b\s*(?:;)?$" normalized-sql)
-                                       (let [limit-num (second (re-find #"\bLIMIT\s+\d+\b\s*(?:;)?$" normalized-sql))
-                                             without-limit (str/replace normalized-sql #"\bLIMIT\s+\d+\b\s*(?:;)?$" "")
-                                             modified (str/replace-first without-limit #"\bSELECT\b" (str "SELECT FIRST " limit-num))]
-                                            (log/debugf "Preprocessed Firebird native SQL: %s -> %s" native-sql modified)
-                                            modified)
-                                       :else
-                                       (do
-                                         (log/infof "No LIMIT clause found or unsupported position in native SQL: %s" native-sql)
-                                         native-sql))]
-                       (assoc-in query [:native :query] modified-sql))
-                  (let [processed-query (parent-method driver query)]
-                       (if (and (:query processed-query) (:aggregation processed-query))
-                         (let [fields (:fields (:query processed-query))
-                               group-by (:group-by (:query processed-query))
-                               new-query (if (and fields group-by)
-                                           (let [complex-date-fields (filter #(and (vector? %) (#{:dateadd :extract} (first %)) (some #{:raw} (flatten %))) fields)
-                                                 field-aliases (map #(vector (keyword (str "field_" (hash %))) %) complex-date-fields)
-                                                 cte-def (map (fn [[alias expr]] [alias expr]) field-aliases)
-                                                 cte-name :date_group
-                                                 new-select (map first field-aliases)
-                                                 new-group-by new-select
-                                                 new-order-by (or (:order-by (:query processed-query)) new-select)]
-                                                (assoc processed-query :query
-                                                       {:with [[cte-name {:select cte-def :from [(:source-table (:query processed-query))]}]]
-                                                        :select (concat new-select (filter #(not (some (fn [f] (= f %)) complex-date-fields)) fields))
-                                                        :from [cte-name]
-                                                        :group-by new-group-by
-                                                        :order-by new-order-by}))
-                                           processed-query)]
-                              (do
-                                (log/infof "Preprocessed Firebird MBQL query with CTE for parameterized date expressions: %s" new-query)
-                                new-query))
-                         (do
-                           (log/infof "Preprocessed Firebird MBQL query: %s" processed-query)
-                           processed-query))))))
+                  (handle-native-sql query)
+                  (do
+                    (log/infof "Preprocessed Firebird MBQL query: %s" processed-query)
+                    (process-mbql-query driver processed-query)))))
+
 
 (defmethod sql.qp/->honeysql [:firebird :substring]
            [driver [_ arg start length]]
