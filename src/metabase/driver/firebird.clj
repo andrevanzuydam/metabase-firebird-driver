@@ -366,27 +366,27 @@
                                                                                              :hour [[:cast [:dateadd :hour 0 field-expr] :TIMESTAMP] :type/DateTime "TIMESTAMP"]
                                                                                              :hour-of-day [[:extract :HOUR :from field-expr] :type/Integer "INTEGER"]
                                                                                              :day [[:cast field-expr :DATE] :type/Date "DATE"]
-                                                                                             :day-of-week [[:+ [:extract :WEEKDAY :from [:cast field-expr :DATE]] 1] :type/Integer "INTEGER"]
+                                                                                             :day-of-week [[:+ [:extract :WEEKDAY :from [:cast field-expr :DATE]] [:inline 1]] :type/Integer "INTEGER"]
                                                                                              :day-of-month [[:extract :DAY :from field-expr] :type/Integer "INTEGER"]
-                                                                                             :day-of-year [[:+ [:extract :YEARDAY :from field-expr] 1] :type/Integer "INTEGER"]
+                                                                                             :day-of-year [[:+ [:extract :YEARDAY :from field-expr] [:inline 1]] :type/Integer "INTEGER"]
                                                                                              :week [[:dateadd :day [:- 0 [:extract :WEEKDAY :from [:cast field-expr :DATE]]] [:cast field-expr :DATE]] :type/Date "DATE"]
                                                                                              :week-of-year [[:extract :WEEK :from field-expr] :type/Integer "INTEGER"]
                                                                                              :month [[:cast [:dateadd :month 0 [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] field-expr]] :DATE] :type/Date "DATE"]
                                                                                              :month-of-year [[:extract :MONTH :from field-expr] :type/Integer "INTEGER"]
-                                                                                             :quarter [[:dateadd :month [:* [:/ [:- [:extract :MONTH :from field-expr] 1] 3] 3] [:cast [:dateadd :month 0 [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] field-expr]] :DATE]] :type/Date "DATE"]
-                                                                                             :quarter-of-year [[:+ [:/ [:- [:extract :MONTH :from field-expr] 1] 3] 1] :type/Integer "INTEGER"]
+                                                                                             :quarter [[:dateadd :month [:* [:/ [:- [:extract :MONTH :from field-expr] [:inline 1]] 3] 3] [:cast [:dateadd :month 0 [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] field-expr]] :DATE]] :type/Date "DATE"]
+                                                                                             :quarter-of-year [[[:+ [:/ [:- [:extract :MONTH :from field-expr] [:inline 1]] [:inline 3]] [:inline 1]]] :type/Integer "INTEGER"]
                                                                                              :year [[:extract :YEAR :from field-expr] :type/Integer "INTEGER"])
                                                                                        [expr nil nil])]
-                                                 [alias new-expr base-type database-type]))
+                                                 [[alias new-expr] base-type database-type]))
                                         complex-exprs)
-                        cte-def (map (fn [[alias expr _ _]] [alias expr]) cte-def+types)
+                        cte-def (map (fn [[alias-expr _ _]] alias-expr) cte-def+types)
                         cte-name :date_group
                         new-select (vec (concat
                                           (mapcat
                                             (fn [sel]
-                                                (if (some #(= sel %) complex-exprs)
-                                                  [(first (some #(when (= sel (second %)) [(first %) [:metabase.util.honey-sql-2/identifier :field-alias [(or (get-in (meta sel) [:metabase.query-processor.util.add-alias-info/desired-alias]) "DATUM")]]]) (map vector cte-aliases complex-exprs)))]
-                                               [sel]))
+                                                (if-let [alias (some (fn [[a e]] (when (= sel e) a)) (map vector cte-aliases complex-exprs))]
+                                                        [[alias [:metabase.util.honey-sql-2/identifier :field-alias [(or (get-in (meta sel) [:metabase.query-processor.util.add-alias-info/desired-alias]) "DATUM")]]]]
+                                                        [sel]))
                                             group-by)
                                           (map
                                             (fn [agg]
@@ -399,9 +399,9 @@
                                        (or (nil? order-by) (keyword? order-by)) new-group-by
                                        (seq order-by) (map
                                                         (fn [clause]
-                                                            (if (some #(= (first clause) %) complex-exprs)
-                                                              [(some #(when (= (first clause) (second %)) (first %)) (map vector cte-aliases complex-exprs)) (second clause)]
-                                                              clause))
+                                                            (if-let [alias (some (fn [[a e]] (when (= (first clause) e) a)) (map vector cte-aliases complex-exprs))]
+                                                                    [alias (second clause)]
+                                                                    clause))
                                                         order-by)
                                        :else new-group-by)
                         fields-metadata (reduce
@@ -411,12 +411,13 @@
                                                 acc))
                                           []
                                           cte-def+types)]
-                       {:cte-name        cte-name
-                        :cte-def         cte-def
-                        :new-select      new-select
-                        :new-group-by    new-group-by
-                        :new-order-by    new-order-by
+                       {:cte-name cte-name
+                        :cte-def cte-def
+                        :new-select new-select
+                        :new-group-by new-group-by
+                        :new-order-by new-order-by
                         :fields-metadata fields-metadata}))))
+
 
 (defn- process-mbql-query
        "Processes MBQL queries with aggregations, generating CTEs for complex date expressions if needed."
