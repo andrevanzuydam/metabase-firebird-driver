@@ -39,7 +39,7 @@ cd metabase-firebird-driver
 ```
 * The driver will now be built. The .jar file can be found in the `target` directory.
 
-* Development
+# Development Notes
 
 Under WSL after cloning the metabase project and installing clojure and yarn set up your ```~/.clojure.edn```
 
@@ -65,7 +65,7 @@ clojure -M:user/firebird-driver:nrepl --bind 0.0.0.0 --port 50605
 clojure -M:user/firebird-driver:run
 ```
 
-* Release notes
+# Release notes
 
 Current version is 1.6.1
 Added ability to use a connection string
