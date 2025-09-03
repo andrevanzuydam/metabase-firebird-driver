@@ -247,8 +247,7 @@
              has-complex-expr? (fn [expr]
                                    (and (coll? expr)
                                         (some (fn [e]
-                                                  (or (and (coll? e) (#{:dateadd :extract} (first e)))
-                                                      (and (vector? e) (= :raw (first e)) (re-find #"\?" (str (second e))))))
+                                                  (and (coll? e) (#{:dateadd :extract} (first e))))
                                               (tree-seq coll? seq expr))))
              complex-exprs (when group-by (filter has-complex-expr? group-by))
              modified-query (if (seq complex-exprs)
@@ -294,14 +293,18 @@
                                   offset
                                   (str/replace-first % #"\bSELECT\b" (str "SELECT SKIP " offset))
                                   :else
-                                  %)))]
-            (log/debugf "Generated Firebird SQL: %s, params: %s" modified-sql params)
+                                  %)))
+             filtered-params (filterv (fn [param]
+                                          (not (and (string? param)
+                                                    (re-matches #"^'.*'$" param))))
+                                      params)]
+            (log/debugf "Generated Firebird SQL: %s, params: %s" modified-sql filtered-params)
             (try
-              (into [modified-sql] params)
+              (into [modified-sql] filtered-params)
               (catch Exception e
-                (log/errorf "Error formatting Firebird query: %s, query map: %s, SQL: %s, params: %s" (.getMessage e) query modified-sql params)
+                (log/errorf "Error formatting Firebird query: %s, query map: %s, SQL: %s, params: %s" (.getMessage e) query modified-sql filtered-params)
                 (throw (ex-info (str "Error formatting Firebird query: " (.getMessage e))
-                                {:query query :sql modified-sql :params params} e))))))
+                                {:query query :sql modified-sql :params filtered-params} e))))))
 
 (defmethod sql.qp/format-honeysql :firebird
            [driver query]
@@ -359,10 +362,15 @@
            [driver [_ field-id opts :as field]]
            (let [metadata-provider (metabase.query-processor.store/metadata-provider)
                  table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "source")
-                 table-name (if (integer? table-id)
+                 table-name (cond
+                              (integer? table-id)
                               (:name (metabase.lib.metadata/table metadata-provider table-id))
+                              (= table-id :metabase.query-processor.util.add-alias-info/source)
+                              "source"
+                              :else
                               (str table-id))
-                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias]) "field")]
+                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias]) (str field-id))]
+                (log/debugf "Generating HoneySQL for field: field-id=%s, table-id=%s, table-name=%s, field-alias=%s" field-id table-id table-name field-alias)
                 (hx/identifier :field table-name field-alias)))
 
 (defn- build-cte-for-complex-exprs
@@ -474,14 +482,49 @@
                     (log/infof "Preprocessed Firebird MBQL query: %s" processed-query)
                     (process-mbql-query driver processed-query)))))
 
+(defmethod sql.qp/->honeysql [:firebird :concat]
+           [driver [_ & args]]
+           (let [converted-args (map (fn [arg]
+                                         (cond
+                                           (and (vector? arg) (= :value (first arg)))
+                                           (let [val (second arg)]
+                                                (if (string? val)
+                                                  (do
+                                                    (log/debugf "Converting string literal in concat: %s" val)
+                                                    [:raw (str "'" (str/replace val "'" "''") "'")])
+                                                  (do
+                                                    (log/warnf "Non-string value in concat: %s. Casting to string." val)
+                                                    [:raw (str "'" (str/replace (str val) "'" "''") "'")])))
 
+                                           (string? arg)
+                                           (do
+                                             (log/debugf "Converting raw string literal in concat: %s" arg)
+                                             [:raw (str "'" (str/replace arg "'" "''") "'")])
+
+                                           :else
+                                           (sql.qp/->honeysql driver arg)))
+                                     args)]
+                (let [result (reduce (fn [acc arg]
+                                         [:|| acc arg])
+                                     (first converted-args)
+                                     (rest converted-args))]
+                     (log/debugf "Generated concat HoneySQL form: %s" result)
+                     result)))
 
 (defmethod sql.qp/->honeysql [:firebird :substring]
            [driver [_ arg start length]]
-           (let [col-name (sql.qp/->honeysql driver arg)]
-                (if length
-                  [:substring col-name [:raw (str "FROM " (sql.qp/->honeysql driver start) " FOR " (sql.qp/->honeysql driver length))]]
-                  [:substring col-name [:raw (str "FROM " (sql.qp/->honeysql driver start))]])))
+           (let [col-name (sql.qp/->honeysql driver arg)
+                 start-expr (sql.qp/->honeysql driver start)
+                 length-expr (when length (sql.qp/->honeysql driver length))]
+                (log/debugf "Generating SUBSTRING for arg=%s, start=%s, length=%s" arg start length)
+                (if length-expr
+                  (let [length-expr (if (and (number? length) (> length 32767))
+                                      (do
+                                        (log/warnf "Substring length %d exceeds Firebird maximum (32767); capping at 32767" length)
+                                        32767)
+                                      length-expr)]
+                       [:substring col-name [:raw (str "FROM " start-expr " FOR " length-expr)]])
+                  [:substring col-name [:raw (str "FROM " start-expr)]])))
 
 (defmethod sql.qp/date [:firebird :default] [_ _ expr] expr)
 
