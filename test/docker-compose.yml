@@ -1,0 +1,33 @@
+services:
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    ports:
+      - "3001:3000"
+    networks:
+      - metabase-network
+    volumes:
+      - metabase-data:/metabase-data
+      - ./plugins:/plugins
+    restart: unless-stopped
+  firebird:
+    image: firebirdsql/firebird:latest
+    container_name: metabase_firebird
+    environment:
+      - FIREBIRD_PASSWORD=masterkey
+      - FIREBIRD_DATABASE=metabase.fdb
+      - FIREBIRD_USER=SYSDBA
+    ports:
+      - "3054:3050"
+    volumes:
+      - firebird-data:/var/lib/firebird
+    networks:
+      - metabase-network
+    restart: unless-stopped
+volumes:
+  metabase-data:
+  firebird-data:
+
+networks:
+  metabase-network:
+    driver: bridge

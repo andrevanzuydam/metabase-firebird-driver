@@ -5,7 +5,7 @@ This driver enables metabase to connect to [FirebirdSQL](https://firebirdsql.org
 ## Installation:
 
 * Make sure you have installed a recent Metabase Version.
-* Download the [latest release](https://github.com/evosec/metabase-firebird-driver/releases/latest) of the Firebird driver or [build it from source](#building-from-source).
+* Download the [latest release](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/latest) of the Firebird driver or [build it from source](#building-from-source).
 * Create the `plugins` directory if it doesn't already exist. By default that directory is next to the metabase.jar file, but you can specify a different directory by setting the environment varianble `MB_PLUGINS_DIR`.
 * Just drop the `firebird.metabase-driver.jar` in the plugins directory. On startup, metabase will load the plugin and the driver should be available.
 
