@@ -9,6 +9,19 @@ This driver enables metabase to connect to [FirebirdSQL](https://firebirdsql.org
 * Create the `plugins` directory if it doesn't already exist. By default, that directory is next to the metabase.jar file, but you can specify a different directory by setting the environment varianble `MB_PLUGINS_DIR`.
 * Just drop / copy the `firebird.metabase-driver.jar` in the plugins' directory. On startup, metabase will load the plugin and the driver should be available.
 
+## Configuration
+
+Under Metabase Admin, you can click Add database and choose the **FirebirdSQL** driver from the list.
+Choose whether you want to fill out all the connection setting or use a connection string. ***For legacy database engines you will have to use a connection string!***
+
+![img.png](img.png)
+
+The connection string is constructed like this
+
+```
+jdbc:firebirdsql://<hostname>:<port>/<database path>?user=<username>&password=<password>&enableProtocol=<protocol>
+```
+
 ## Authentication issues when using legacy Firebird (2.5 and older)
 
 Example of connection string to connect to Firebird 2.5 (Protocol 12)
