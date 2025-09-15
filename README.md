@@ -1,6 +1,7 @@
 # Firebird driver for metabase
 
-This driver enables metabase to connect to [FirebirdSQL](https://firebirdsql.org/) databases.
+This driver enables metabase to connect to [FirebirdSQL](https://firebirdsql.org/) databases. Please star this repository if you
+use this driver and find it useful.
 
 ## Installation:
 
