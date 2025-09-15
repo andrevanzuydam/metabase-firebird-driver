@@ -96,7 +96,7 @@ clojure -M:user/firebird-driver:run
 ### Version 1.6.2
 - Fixes for Concat and long field names breaking queries
 
-### Version is 1.6.1
+### Version 1.6.1
 - Added ability to use a connection string
 - Has fixes for group by, complex date handling
 
