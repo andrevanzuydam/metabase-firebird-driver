@@ -154,18 +154,20 @@
                                                 "WHEN f.RDB$FIELD_TYPE = 13 THEN 'TIME' "
                                                 "WHEN f.RDB$FIELD_TYPE = 14 THEN 'CHAR' "
                                                 "WHEN f.RDB$FIELD_TYPE = 16 THEN 'BIGINT' "
+                                                "WHEN f.RDB$FIELD_TYPE = 23 THEN 'BOOLEAN' "
                                                 "WHEN f.RDB$FIELD_TYPE = 27 THEN 'DOUBLE PRECISION' "
                                                 "WHEN f.RDB$FIELD_TYPE = 35 THEN 'TIMESTAMP' "
                                                 "WHEN f.RDB$FIELD_TYPE = 37 THEN 'VARCHAR' "
-                                                "WHEN f.RDB$FIELD_TYPE = 261 THEN 'BLOB SUB_TYPE TEXT' "
-                                                "ELSE 'UNKNOWN' END AS database_type, "
+                                                "WHEN f.RDB$FIELD_TYPE = 261 AND f.RDB$FIELD_SUB_TYPE = 1 THEN 'BLOB SUB_TYPE TEXT' "
+                                                "WHEN f.RDB$FIELD_TYPE = 261 THEN 'BLOB SUB_TYPE 0' "
+                                                "ELSE 'VARCHAR' END AS database_type, "
                                                 "rf.RDB$FIELD_POSITION AS \"position\", "
-                                                "CASE WHEN rf.RDB$NULL_FLAG = 1 THEN FALSE ELSE TRUE END AS nullable, "
-                                                "EXISTS (SELECT 1 FROM RDB$RELATION_CONSTRAINTS rc "
+                                                "CASE WHEN rf.RDB$NULL_FLAG = 1 THEN 0 ELSE 1 END AS nullable, "
+                                                "IIF(EXISTS (SELECT 1 FROM RDB$RELATION_CONSTRAINTS rc "
                                                 "JOIN RDB$INDEX_SEGMENTS idx ON rc.RDB$INDEX_NAME = idx.RDB$INDEX_NAME "
                                                 "WHERE rc.RDB$CONSTRAINT_TYPE = 'PRIMARY KEY' "
                                                 "AND rc.RDB$RELATION_NAME = rf.RDB$RELATION_NAME "
-                                                "AND idx.RDB$FIELD_NAME = rf.RDB$FIELD_NAME) AS pk "
+                                                "AND idx.RDB$FIELD_NAME = rf.RDB$FIELD_NAME), 1, 0) AS pk "
                                                 "FROM RDB$RELATION_FIELDS rf "
                                                 "JOIN RDB$FIELDS f ON rf.RDB$FIELD_SOURCE = f.RDB$FIELD_NAME "
                                                 "WHERE rf.RDB$RELATION_NAME = ?") name])]
@@ -194,11 +196,13 @@
                                      [:= :f.rdb$field_type 13] "TIME"
                                      [:= :f.rdb$field_type 14] "CHAR"
                                      [:= :f.rdb$field_type 16] "BIGINT"
+                                     [:= :f.rdb$field_type 23] "BOOLEAN"
                                      [:= :f.rdb$field_type 27] "DOUBLE PRECISION"
                                      [:= :f.rdb$field_type 35] "TIMESTAMP"
                                      [:= :f.rdb$field_type 37] "VARCHAR"
-                                     [:= :f.rdb$field_type 261] "BLOB SUB_TYPE TEXT"
-                                     :else "UNKNOWN") :database-type]
+                                     [:and [:= :f.rdb$field_type 261] [:= :f.rdb$field_sub_type 1]] "BLOB SUB_TYPE TEXT"
+                                     [:= :f.rdb$field_type 261] "BLOB SUB_TYPE 0"
+                                     :else "VARCHAR") :database-type]
                          [:- :rf.rdb$field_position [:inline 1] :database-position]
                          [:null :table-schema]
                          [:rf.rdb$relation_name :table-name]
@@ -285,6 +289,9 @@
                               (str/replace #"(DATEADD)\s*\(\s*\"(year|month|day|hour|minute|second|week|quarter)\"" "$1($2")
                               (str/replace #"(EXTRACT)\s*\(\s*\"(YEAR|MONTH|DAY|HOUR|MINUTE|SECOND|WEEKDAY|YEARDAY|WEEK|QUARTER)\"" "$1($2")
                               (str/replace #"(EXTRACT)\s*\(\s*([A-Z]+)\s*,\s*\"from\"\s*,\s*([^)]+)\)" "$1($2 FROM $3)")
+                              ;; Fix SUBSTRING: remove comma between column and FROM keyword
+                              ;; HoneySQL generates SUBSTRING(col, FROM x FOR y) but Firebird requires SUBSTRING(col FROM x FOR y)
+                              (str/replace #"(SUBSTRING\s*\([^,]+),\s*(FROM\s)" "$1 $2")
                               (#(cond
                                   (and limit offset)
                                   (str/replace-first % #"\bSELECT\b" (str "SELECT FIRST " limit " SKIP " offset))
@@ -523,8 +530,10 @@
                                         (log/warnf "Substring length %d exceeds Firebird maximum (32767); capping at 32767" length)
                                         32767)
                                       length-expr)]
-                       [:substring col-name [:raw (str "FROM " start-expr " FOR " length-expr)]])
-                  [:substring col-name [:raw (str "FROM " start-expr)]])))
+                       ;; Use HoneySQL named arguments (:!from, :!for) to generate
+                       ;; SUBSTRING(col FROM x FOR y) without comma — Firebird syntax
+                       [:substring col-name :!from start-expr :!for length-expr])
+                  [:substring col-name :!from start-expr])))
 
 (defmethod sql.qp/date [:firebird :default] [_ _ expr] expr)
 

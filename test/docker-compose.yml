@@ -4,12 +4,19 @@ services:
     container_name: metabase
     ports:
       - "3001:3000"
+    environment:
+      - MB_PLUGINS_DIR=/plugins
+      - MB_DB_FILE=/metabase-data/metabase.db
     networks:
       - metabase-network
     volumes:
       - metabase-data:/metabase-data
-      - ./plugins:/plugins
+      - ../target:/plugins
+    depends_on:
+      firebird:
+        condition: service_started
     restart: unless-stopped
+
   firebird:
     image: firebirdsql/firebird:latest
     container_name: metabase_firebird
@@ -24,6 +31,7 @@ services:
     networks:
       - metabase-network
     restart: unless-stopped
+
 volumes:
   metabase-data:
   firebird-data:
