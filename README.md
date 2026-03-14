@@ -3,6 +3,15 @@
 This driver enables Metabase to connect to [FirebirdSQL](https://firebirdsql.org/) databases. Please star this repository if you
 use this driver and find it useful.
 
+## Downloads
+
+| Driver | Firebird Version | Download |
+|--------|-----------------|----------|
+| **Standard** (recommended) | 2.5 – 5.0 | [Latest release](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/latest) |
+| **Legacy** | 1.5 – 2.5 | [v1.7.0-legacy](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.0-legacy) |
+
+> **Legacy driver:** If you need to connect to Firebird 1.5 or 2.0, use the legacy driver which bundles Jaybird 2.2.15 for wire protocol 10 support. It registers as a separate driver ("FirebirdSQL Legacy 1.5+") and can coexist with the standard driver.
+
 ## Installation
 
 * Make sure you have installed a recent Metabase version.
@@ -41,7 +50,7 @@ Use this table below to match the version of Firebird you are trying to connect 
 | Firebird 4.0         | 16               |
 | Firebird 5.0         | 19               |
 
-> **Note:** Firebird 1.0 - 2.0 (protocol 10) is not supported by the current Jaybird 6.x JDBC driver. Those versions reached end-of-life and are no longer recommended for production use.
+> **Note:** The standard driver (Jaybird 6.x) does not support Firebird 1.0 – 2.0 (protocol 10/11). For Firebird 1.5+, use the [legacy driver](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.0-legacy) instead.
 
 If you cannot get it working, please raise an issue and be sure to include the version of Metabase & Firebird you are having the issue with.
 
@@ -49,6 +58,7 @@ If you cannot get it working, please raise an issue and be sure to include the v
 
 | Driver Version | Metabase Version | Firebird Version | Jaybird Version |
 |---------------|------------------|------------------|-----------------|
+| 1.7.0-legacy  | 0.53+            | 1.5 - 2.5       | 2.2.15          |
 | 1.6.3+        | 0.53+            | 2.5 - 5.0       | 6.0.3           |
 | 1.6.2         | 0.53+            | 3.0 - 5.0       | 6.0.3           |
 
@@ -170,6 +180,12 @@ clojure -X:dev:drivers:drivers-dev:test:user/firebird-driver
 ```
 
 ## Release notes
+
+### Version 1.7.0-legacy
+- New legacy driver for Firebird 1.5+ using Jaybird 2.2.15 (wire protocol 10 support)
+- Registers as separate "FirebirdSQL (Legacy 1.5+)" driver
+- Supports database sync, native SQL queries, and MBQL visual queries
+- Firebird 1.5 does not have BOOLEAN type — booleans handled as 0/1 integers
 
 ### Version 1.6.3
 - Fix SUBSTRING SQL generation — removes invalid comma before FROM keyword (Issue #7)
