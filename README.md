@@ -5,9 +5,9 @@ use this driver and find it useful.
 
 ## Downloads
 
-| Driver | Firebird Version | Download |
-|--------|-----------------|----------|
-| **Standard** (recommended) | 2.5 – 5.0 | [Latest release](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/latest) |
+| Driver | Firebird Version | Download                                                                                               |
+|--------|-----------------|--------------------------------------------------------------------------------------------------------|
+| **Standard** (recommended) | 2.5 – 5.0 | [Latest release](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/v1.6.3)           |
 | **Legacy** | 1.5 – 2.5 | [v1.7.0-legacy](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.0-legacy) |
 
 > **Legacy driver:** If you need to connect to Firebird 1.5 or 2.0, use the legacy driver which bundles Jaybird 2.2.15 for wire protocol 10 support. It registers as a separate driver ("FirebirdSQL Legacy 1.5+") and can coexist with the standard driver.
@@ -205,8 +205,9 @@ clojure -X:dev:drivers:drivers-dev:test:user/firebird-driver
 
 ## Our Sponsors
 
-**Sponsored with love by Code Infinity**
+**Sponsored with 🩵 by Code Infinity**
 
 [<img src="https://codeinfinity.co.za/wp-content/uploads/2025/09/c8e-logo-github.png" alt="Code Infinity" width="100">](https://codeinfinity.co.za/about-open-source-policy?utm_source=github&utm_medium=website&utm_campaign=opensource_campaign&utm_id=opensource)
 
-*Supporting open source communities - Innovate - Code - Empower*
+*Supporting open source communities <span style="color: #1DC7DE;">•</span> Innovate <span style="color: #1DC7DE;">•</span> Code <span style="color: #1DC7DE;">•</span> Empower*
+
