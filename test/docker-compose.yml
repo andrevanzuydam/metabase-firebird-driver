@@ -32,9 +32,21 @@ services:
       - metabase-network
     restart: unless-stopped
 
+  firebird15:
+    image: mladenp87/firebird-1.5.6-ss
+    container_name: metabase_firebird15
+    ports:
+      - "3055:3050"
+    volumes:
+      - firebird15-data:/data
+    networks:
+      - metabase-network
+    restart: unless-stopped
+
 volumes:
   metabase-data:
   firebird-data:
+  firebird15-data:
 
 networks:
   metabase-network:

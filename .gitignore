@@ -24,3 +24,5 @@
 .idea/**/uiDesigner.xml
 .idea/**/dbnavigator.xml
 /test/plugins/
+.env
+.idea/

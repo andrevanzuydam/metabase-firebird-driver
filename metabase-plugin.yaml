@@ -1,0 +1,53 @@
+info:
+  name: Metabase FirebirdSQL Driver
+  version: 1.6.3
+  description: Allows Metabase to connect to FirebirdSQL databases.
+driver:
+  name: firebird
+  display-name: FirebirdSQL
+  lazy-load: true
+  parent: sql-jdbc
+  connection-properties:
+    - name: use-conn-uri
+      type: boolean
+      display-name: Use a connection string
+      default: false
+    - name: conn-uri
+      display-name: Connection String
+      placeholder: "jdbc:firebirdsql://localhost:3050/BirdsOfTheWorld?user=sysdba&password=masterkey"
+      required: false
+      visible-if:
+        use-conn-uri: true
+    - merge:
+        - host
+        - visible-if:
+            use-conn-uri: false
+          required: true
+    - merge:
+        - dbname
+        - visible-if:
+            use-conn-uri: false
+    - merge:
+        - port
+        - placeholder: 3050
+          visible-if:
+            use-conn-uri: false
+    - merge:
+        - user
+        - required: false
+          visible-if:
+            use-conn-uri: false
+    - merge:
+        - password
+        - name: pass
+          visible-if:
+            use-conn-uri: false
+    - merge:
+        - additional-options
+        - placeholder: "blobBufferSize=2048"
+  connection-properties-include-tunnel-config: false
+init:
+  - step: load-namespace
+    namespace: metabase.driver.firebird
+  - step: register-jdbc-driver
+    class: org.firebirdsql.jdbc.FBDriver
