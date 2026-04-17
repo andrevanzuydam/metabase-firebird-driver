@@ -5,6 +5,15 @@ set -eo pipefail
 DRIVER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 METABASE_PATH="${METABASE_PATH:-$DRIVER_PATH/../../metabase}"
 
+# On Windows (git-bash/MSYS), translate Unix-style paths to Windows native so the
+# JVM and tools.deps resolve :local/root correctly. No-op on Linux/macOS.
+if command -v cygpath >/dev/null 2>&1; then
+  # -m gives mixed form (D:/foo/bar) — accepted by the JVM and safe inside EDN strings,
+  # unlike -w which produces backslashes that the EDN reader treats as escape chars.
+  DRIVER_PATH="$(cygpath -m "$DRIVER_PATH")"
+  METABASE_PATH="$(cygpath -m "$METABASE_PATH")"
+fi
+
 if [ ! -d "$METABASE_PATH" ]; then
   echo "Error: Metabase source not found at $METABASE_PATH"
   echo "Either clone Metabase as a sibling directory or set METABASE_PATH."

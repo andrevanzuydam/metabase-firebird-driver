@@ -1,6 +1,11 @@
 \#*\#
 .\#*
 /target
+/legacy/target
+/.cpcache
+/.calva
+/.clj-kondo
+/.lsp
 /.nrepl-port
 
 ### Intellij ###

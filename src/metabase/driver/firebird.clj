@@ -81,7 +81,7 @@
 (doseq [[feature supported?] {; supported
                               :basic-aggregations                     true
                               :expression-aggregations                true
-                              :foreign-keys                           true
+                              :metadata/key-constraints               true
                               :nested-queries                         true
                               :standard-deviation-aggregations        true
                               ; not supported
@@ -113,25 +113,27 @@
                (throw (Exception. (str "Error in describe-database: " (.getMessage e)) e)))))
 
 (def ^:private database-type->base-type
+  ;; Order matters: more-specific patterns first, because pattern-based-database-type->base-type
+  ;; returns on the first match. Keep BLOB SUB_TYPE TEXT / 1 ahead of bare BLOB, etc.
   (sql-jdbc.sync/pattern-based-database-type->base-type
-    [[#"INT64" :type/BigInteger]
-     [#"DECIMAL" :type/Decimal]
-     [#"FLOAT" :type/Float]
-     [#"BLOB" :type/*]
-     [#"INTEGER" :type/Integer]
-     [#"NUMERIC" :type/Decimal]
-     [#"DOUBLE" :type/Float]
-     [#"SMALLINT" :type/Integer]
-     [#"CHAR" :type/Text]
-     [#"BIGINT" :type/BigInteger]
-     [#"TIMESTAMP" :type/DateTime]
-     [#"DATE" :type/Date]
-     [#"TIME" :type/Time]
-     [#"BLOB SUB_TYPE 0" :type/*]
-     [#"BLOB SUB_TYPE 1" :type/Text]
-     [#"BLOB SUB_TYPE TEXT" :type/Text]
-     [#"DOUBLE PRECISION" :type/Float]
-     [#"BOOLEAN" :type/Boolean]]))
+    [[#"BLOB SUB_TYPE TEXT" :type/Text]
+     [#"BLOB SUB_TYPE 1"    :type/Text]
+     [#"BLOB SUB_TYPE 0"    :type/*]
+     [#"BLOB"               :type/*]
+     [#"INT64"              :type/BigInteger]
+     [#"BIGINT"             :type/BigInteger]
+     [#"SMALLINT"           :type/Integer]
+     [#"INTEGER"            :type/Integer]
+     [#"DECIMAL"            :type/Decimal]
+     [#"NUMERIC"            :type/Decimal]
+     [#"DOUBLE PRECISION"   :type/Float]
+     [#"DOUBLE"             :type/Float]
+     [#"FLOAT"              :type/Float]
+     [#"CHAR"               :type/Text]
+     [#"TIMESTAMP"          :type/DateTime]
+     [#"DATE"               :type/Date]
+     [#"TIME"               :type/Time]
+     [#"BOOLEAN"            :type/Boolean]]))
 
 (defmethod sql-jdbc.sync/database-type->base-type :firebird
            [_ column-type]
@@ -367,18 +369,28 @@
 
 (defmethod sql.qp/->honeysql [:firebird :field]
            [driver [_ field-id opts :as field]]
-           (let [metadata-provider (metabase.query-processor.store/metadata-provider)
-                 table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "source")
+           (let [table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "source")
+                 ;; Only resolve the QP metadata provider when we actually need a Table lookup.
+                 ;; This keeps unit tests that exercise this method with a string/alias table-id
+                 ;; from failing on an uninitialized QP store.
                  table-name (cond
                               (integer? table-id)
-                              (:name (metabase.lib.metadata/table metadata-provider table-id))
+                              (:name (metabase.lib.metadata/table
+                                       (metabase.query-processor.store/metadata-provider)
+                                       table-id))
                               (= table-id :metabase.query-processor.util.add-alias-info/source)
                               "source"
                               :else
                               (str table-id))
-                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias]) (str field-id))]
-                (log/debugf "Generating HoneySQL for field: field-id=%s, table-id=%s, table-name=%s, field-alias=%s" field-id table-id table-name field-alias)
-                (hx/identifier :field table-name field-alias)))
+                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias]) (str field-id))
+                 identifier (hx/identifier :field table-name field-alias)
+                 temporal-unit (:temporal-unit opts)]
+                (log/debugf "Generating HoneySQL for field: field-id=%s, table-id=%s, table-name=%s, field-alias=%s, temporal-unit=%s" field-id table-id table-name field-alias temporal-unit)
+                ;; Issue #4: preserve :temporal-unit from MBQL breakouts/filters by wrapping
+                ;; the identifier with the Firebird date function for that unit.
+                (if (and temporal-unit (not= temporal-unit :default))
+                  (sql.qp/date driver temporal-unit identifier)
+                  identifier)))
 
 (defn- build-cte-for-complex-exprs
        [driver group-by table-alias processed-query]
@@ -386,7 +398,10 @@
                                    (and (coll? expr)
                                         (some (fn [e]
                                                   (or (and (coll? e) (#{:dateadd :extract} (first e)))
-                                                      (and (vector? e) (= :raw (first e)) (re-find #"\?" (str (second e))))))
+                                                      (and (vector? e) (= :raw (first e)) (re-find #"\?" (str (second e))))
+                                                      ;; Issue #4: a plain [:field id {:temporal-unit ...}] breakout must
+                                                      ;; route through the CTE builder so the unit turns into EXTRACT/DATEADD.
+                                                      (and (vector? e) (= :field (first e)) (get-in e [2 :temporal-unit]))))
                                               (tree-seq coll? seq expr))))
              complex-exprs (when group-by (filter has-complex-expr? group-by))]
             (when (seq complex-exprs)
@@ -414,7 +429,7 @@
                                                                                              :month-of-year [[:extract :MONTH :from field-expr] :type/Integer "INTEGER"]
                                                                                              :quarter [[:lift {:database-type "DATE"} [:dateadd :month [:* [:/ [:- [:extract :MONTH :from field-expr] [:inline 1]] [:inline 3]] 3] [:cast [:dateadd :month 0 [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] field-expr]] :DATE]]] :type/Date "DATE"]
                                                                                              :quarter-of-year [[[:+ [:/ [:- [:extract :MONTH :from field-expr] [:inline 1]] [:inline 3]] [:inline 1]]] :type/Integer "INTEGER"]
-                                                                                             :year [[:extract :YEAR :from field-expr] :type/Integer "INTEGER"])
+                                                                                             :year [[:lift {:database-type "DATE"} [:cast [:dateadd :day [:- [:inline 1] [:extract :DAY :from field-expr]] [:dateadd :month [:- [:inline 1] [:extract :MONTH :from field-expr]] field-expr]] :DATE]] :type/Date "DATE"])
                                                                                        [expr nil nil])]
                                                  [[alias new-expr] base-type database-type]))
                                         complex-exprs)
@@ -595,7 +610,12 @@
 
 (defmethod sql.qp/date [:firebird :year]
            [_ _ expr]
-           [:extract :YEAR :from expr])
+           ;; Truncate to first day of year as a DATE so filter RHS and column are both DATE.
+           ;; Firebird is strictly typed: comparing a DATE column to EXTRACT(YEAR ...) INTEGER
+           ;; raises "conversion error from string" (see issue #8).
+           (hx/cast :DATE
+                    [:dateadd :day (hx/- 1 [:extract :DAY :from expr])
+                     [:dateadd :month (hx/- 1 [:extract :MONTH :from expr]) expr]]))
 
 (defmethod sql.qp/->honeysql [:firebird Boolean] [_ bool] (if bool 1 0))
 

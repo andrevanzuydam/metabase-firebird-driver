@@ -1,6 +1,6 @@
 info:
   name: Metabase FirebirdSQL Legacy Driver
-  version: 1.6.3
+  version: 1.7.1
   description: Allows Metabase to connect to legacy FirebirdSQL databases (1.5 - 2.5). Uses Jaybird 2.2.x for maximum backward compatibility.
 driver:
   name: firebird-legacy

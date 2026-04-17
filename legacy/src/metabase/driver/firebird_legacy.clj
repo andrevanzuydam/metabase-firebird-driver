@@ -126,7 +126,7 @@
 (doseq [[feature supported?] {; supported
                               :basic-aggregations                     true
                               :expression-aggregations                true
-                              :foreign-keys                           true
+                              :metadata/key-constraints               true
                               :nested-queries                         true
                               :standard-deviation-aggregations        true
                               ; not supported
@@ -165,24 +165,25 @@
 ;; Firebird 1.5 field types: 7=SMALLINT, 8=INTEGER, 10=FLOAT, 12=DATE, 13=TIME, 14=CHAR,
 ;;   16=BIGINT, 27=DOUBLE PRECISION, 35=TIMESTAMP, 37=VARCHAR, 261=BLOB
 (def ^:private database-type->base-type
+  ;; Order matters: more-specific patterns first.
   (sql-jdbc.sync/pattern-based-database-type->base-type
-    [[#"INT64" :type/BigInteger]
-     [#"DECIMAL" :type/Decimal]
-     [#"FLOAT" :type/Float]
-     [#"BLOB" :type/*]
-     [#"INTEGER" :type/Integer]
-     [#"NUMERIC" :type/Decimal]
-     [#"DOUBLE" :type/Float]
-     [#"SMALLINT" :type/Integer]
-     [#"CHAR" :type/Text]
-     [#"BIGINT" :type/BigInteger]
-     [#"TIMESTAMP" :type/DateTime]
-     [#"DATE" :type/Date]
-     [#"TIME" :type/Time]
-     [#"BLOB SUB_TYPE 0" :type/*]
-     [#"BLOB SUB_TYPE 1" :type/Text]
-     [#"BLOB SUB_TYPE TEXT" :type/Text]
-     [#"DOUBLE PRECISION" :type/Float]]))
+    [[#"BLOB SUB_TYPE TEXT" :type/Text]
+     [#"BLOB SUB_TYPE 1"    :type/Text]
+     [#"BLOB SUB_TYPE 0"    :type/*]
+     [#"BLOB"               :type/*]
+     [#"INT64"              :type/BigInteger]
+     [#"BIGINT"             :type/BigInteger]
+     [#"SMALLINT"           :type/Integer]
+     [#"INTEGER"            :type/Integer]
+     [#"DECIMAL"            :type/Decimal]
+     [#"NUMERIC"            :type/Decimal]
+     [#"DOUBLE PRECISION"   :type/Float]
+     [#"DOUBLE"             :type/Float]
+     [#"FLOAT"              :type/Float]
+     [#"CHAR"               :type/Text]
+     [#"TIMESTAMP"          :type/DateTime]
+     [#"DATE"               :type/Date]
+     [#"TIME"               :type/Time]]))
 
 (defmethod sql-jdbc.sync/database-type->base-type :firebird-legacy
            [_ column-type]
@@ -334,17 +335,25 @@
 
 (defmethod sql.qp/->honeysql [:firebird-legacy :field]
            [driver [_ field-id opts :as field]]
-           (let [metadata-provider (metabase.query-processor.store/metadata-provider)
-                 table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "source")
+           (let [table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "source")
+                 ;; Only resolve the QP metadata provider when we actually need a Table lookup.
                  table-name (cond
                               (integer? table-id)
-                              (:name (metabase.lib.metadata/table metadata-provider table-id))
+                              (:name (metabase.lib.metadata/table
+                                       (metabase.query-processor.store/metadata-provider)
+                                       table-id))
                               (= table-id :metabase.query-processor.util.add-alias-info/source)
                               "source"
                               :else
                               (str table-id))
-                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias]) (str field-id))]
-                (hx/identifier :field table-name field-alias)))
+                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias]) (str field-id))
+                 identifier (hx/identifier :field table-name field-alias)
+                 temporal-unit (:temporal-unit opts)]
+                ;; Issue #4: preserve :temporal-unit so breakouts like "by month"/"by year"
+                ;; emit the right EXTRACT/DATEADD form instead of a bare column reference.
+                (if (and temporal-unit (not= temporal-unit :default))
+                  (sql.qp/date driver temporal-unit identifier)
+                  identifier)))
 
 (defmethod sql.qp/preprocess :firebird-legacy
            [driver query]
@@ -447,7 +456,11 @@
 
 (defmethod sql.qp/date [:firebird-legacy :year]
            [_ _ expr]
-           [:extract :YEAR :from expr])
+           ;; Issue #8: return a DATE (first day of year), not an INTEGER, so filter RHS
+           ;; and the column compare as compatible types under Firebird's strict typing.
+           (hx/cast :DATE
+                    [:dateadd :day (hx/- 1 [:extract :DAY :from expr])
+                     [:dateadd :month (hx/- 1 [:extract :MONTH :from expr]) expr]]))
 
 ;; Firebird 1.5 has no BOOLEAN type — use 0/1 integers
 (defmethod sql.qp/->honeysql [:firebird-legacy Boolean] [_ bool] (if bool 1 0))

@@ -15,14 +15,15 @@
 
 (deftest substring-sql-generation-test
   (testing "SUBSTRING generates Firebird-compatible SQL without comma before FROM (Issue #7)"
-    ;; The key fix: Firebird requires SUBSTRING(col FROM x FOR y), NOT SUBSTRING(col, FROM x FOR y)
-    (let [formatted (sql.qp/format-honeysql :firebird
-                      {:select [[:substring [:raw "\"COL\""] [:raw "FROM 1 FOR 100"]]]
-                       :from   [:test_table]})]
-      (is (string? (first formatted)))
-      ;; Ensure no comma between column and FROM
-      (is (not (re-find #"SUBSTRING\s*\([^,]+,\s*FROM" (first formatted)))
-          "SUBSTRING should not have a comma before FROM keyword"))))
+    ;; Feed the named-arg form the driver itself emits (see :firebird :substring handler).
+    ;; Firebird needs SUBSTRING(col FROM x FOR y) — NOT SUBSTRING(col, FROM x FOR y).
+    (let [[sql] (sql.qp/format-honeysql :firebird
+                  {:select [[[:substring [:raw "\"COL\""] :!from 1 :!for 100]]]
+                   :from   [:test_table]})]
+      (is (string? sql))
+      (is (re-find #"SUBSTRING\s*\(" sql))
+      (is (not (re-find #"SUBSTRING\s*\([^,)]+,\s*FROM" sql))
+          "SUBSTRING must not have a comma before FROM"))))
 
 (deftest substring-format-fix-in-firebird-format-test
   (testing "firebird-format regex removes comma in SUBSTRING(col, FROM x FOR y)"
@@ -90,9 +91,17 @@
 ;;; -------------------------------------------- Date Function Tests ---------------------------------------------------
 
 (deftest date-year-test
-  (testing ":year extraction generates EXTRACT(YEAR FROM expr)"
-    (let [result (sql.qp/date :firebird :year :test_col)]
-      (is (= [:extract :YEAR :from :test_col] result)))))
+  (testing ":year truncation returns a DATE (first day of year) — issue #8"
+    ;; Previously emitted EXTRACT(YEAR FROM expr) which returns INTEGER; comparing a DATE
+    ;; column to an INTEGER under Firebird's strict typing raises "conversion error from string".
+    (let [result (sql.qp/date :firebird :year :test_col)
+          sql    (first (sql.qp/format-honeysql :firebird {:select [[result :y]]}))]
+      (is (some? result))
+      (is (str/includes? sql "CAST"))
+      (is (str/includes? sql "DATE"))
+      (is (str/includes? sql "DATEADD"))
+      (is (not (re-find #"EXTRACT\(YEAR" sql))
+          ":year should no longer emit a bare EXTRACT(YEAR ...) expression"))))
 
 (deftest date-month-test
   (testing ":month truncation generates correct DATEADD/EXTRACT combination"
@@ -253,7 +262,8 @@
   (testing "Supported features return true"
     (is (true? (driver/database-supports? :firebird :basic-aggregations nil)))
     (is (true? (driver/database-supports? :firebird :expression-aggregations nil)))
-    (is (true? (driver/database-supports? :firebird :foreign-keys nil)))
+    ;; Metabase renamed :foreign-keys → :metadata/key-constraints.
+    (is (true? (driver/database-supports? :firebird :metadata/key-constraints nil)))
     (is (true? (driver/database-supports? :firebird :nested-queries nil)))
     (is (true? (driver/database-supports? :firebird :standard-deviation-aggregations nil))))
 
@@ -309,6 +319,19 @@
 (deftest honeysql-version-test
   (testing "Firebird driver uses HoneySQL version 2"
     (is (= 2 (sql.qp/honey-sql-version :firebird)))))
+
+;;; ---------------------------------------- Breakout temporal-unit (Issue #4) ---------------------------------------
+
+(deftest breakout-temporal-unit-wraps-field-test
+  (testing ":field with :temporal-unit emits EXTRACT/DATEADD, not a bare identifier (issue #4)"
+    ;; Directly verify the :month-of-year sql.qp/date impl — the :field method routes
+    ;; temporal-unit opts through this, so if it's correct, breakouts are correct too.
+    (let [unit-exprs {:month-of-year [:extract :MONTH :from :test_col]
+                      :hour-of-day   [:extract :HOUR :from :test_col]
+                      :week-of-year  [:extract :WEEK :from :test_col]}]
+      (doseq [[unit expected] unit-exprs]
+        (is (= expected (sql.qp/date :firebird unit :test_col))
+            (str "temporal-unit " unit " must wrap with Firebird EXTRACT"))))))
 
 ;;; ---------------------------------------- SQL Comment Removal Test ------------------------------------------------
 

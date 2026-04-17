@@ -5,6 +5,13 @@
  :deps
  {org.firebirdsql.jdbc/jaybird {:mvn/version "6.0.3"}}
 
+ ;; Metabase pulls a few artifacts from non-central repos; since :mvn/repos can't live
+ ;; inside an alias, it's declared at the top level so :test resolves correctly.
+ :mvn/repos
+ {"metabase-maven-downloads" {:url "https://s3.amazonaws.com/metabase-maven-downloads"}
+  "redshift"                 {:url "https://s3.amazonaws.com/redshift-maven-repository/release"}
+  "opensaml"                 {:url "https://build.shibboleth.net/nexus/content/repositories/releases/"}}
+
  ;; build the driver with clojure -X:build
  :aliases
  {:build
@@ -13,4 +20,14 @@
    :exec-fn    build-drivers.build-driver/build-driver!
    :exec-args  {:driver      :firebird
                 :project-dir "."
-                :target-dir  "./target"}}}}
+                :target-dir  "./target"}}
+
+  ;; Run unit tests:  clojure -M:test
+  :test
+  {:extra-paths   ["test"]
+   :extra-deps    {metabase/metabase-core {:local/root "../metabase"}}
+   ;; metabase-core replaces a few upstream libs via git forks; :local/root doesn't
+   ;; propagate its :override-deps, so we restate the most disruptive one here.
+   :override-deps {redux/redux {:git/url "https://github.com/metabase/redux"
+                                :git/sha "4a37feaf817a2a6b5ef688c927f6fd4375964433"}}
+   :main-opts     ["-m" "metabase.driver.firebird-test-runner"]}}}
