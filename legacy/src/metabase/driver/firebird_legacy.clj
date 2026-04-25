@@ -335,7 +335,7 @@
 
 (defmethod sql.qp/->honeysql [:firebird-legacy :field]
            [driver [_ field-id opts :as field]]
-           (let [table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "source")
+           (let [table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "__mb_source")
                  ;; Only resolve the QP metadata provider when we actually need a Table lookup.
                  table-name (cond
                               (integer? table-id)
@@ -343,7 +343,9 @@
                                        (metabase.query-processor.store/metadata-provider)
                                        table-id))
                               (= table-id :metabase.query-processor.util.add-alias-info/source)
-                              "source"
+                              ;; Issue #9: Metabase core (v0.57+) aliases the source-query
+                              ;; wrapper as "__mb_source"; column refs must match.
+                              "__mb_source"
                               :else
                               (str table-id))
                  field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias]) (str field-id))
