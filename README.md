@@ -7,8 +7,8 @@ use this driver and find it useful.
 
 | Driver | Firebird Version | Download                                                                                               |
 |--------|-----------------|--------------------------------------------------------------------------------------------------------|
-| **Standard** (recommended) | 2.5 – 5.0 | [Latest release](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/v1.6.3)           |
-| **Legacy** | 1.5 – 2.5 | [v1.7.0-legacy](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.0-legacy) |
+| **Standard** (recommended) | 2.5 – 5.0 | [v1.6.5](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.6.5) |
+| **Legacy** | 1.5 – 2.5 | [v1.7.2-legacy](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.2-legacy) |
 
 > **Legacy driver:** If you need to connect to Firebird 1.5 or 2.0, use the legacy driver which bundles Jaybird 2.2.15 for wire protocol 10 support. It registers as a separate driver ("FirebirdSQL Legacy 1.5+") and can coexist with the standard driver.
 
@@ -50,17 +50,23 @@ Use this table below to match the version of Firebird you are trying to connect 
 | Firebird 4.0         | 16               |
 | Firebird 5.0         | 19               |
 
-> **Note:** The standard driver (Jaybird 6.x) does not support Firebird 1.0 – 2.0 (protocol 10/11). For Firebird 1.5+, use the [legacy driver](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.0-legacy) instead.
+> **Note:** The standard driver (Jaybird 6.x) does not support Firebird 1.0 – 2.0 (protocol 10/11). For Firebird 1.5+, use the [legacy driver](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.2-legacy) instead.
 
 If you cannot get it working, please raise an issue and be sure to include the version of Metabase & Firebird you are having the issue with.
 
 ## Compatibility
 
 | Driver Version | Metabase Version | Firebird Version | Jaybird Version |
-|---------------|------------------|------------------|-----------------|
-| 1.7.0-legacy  | 0.53+            | 1.5 - 2.5       | 2.2.15          |
-| 1.6.3+        | 0.53+            | 2.5 - 5.0       | 6.0.3           |
-| 1.6.2         | 0.53+            | 3.0 - 5.0       | 6.0.3           |
+|----------------|------------------|------------------|-----------------|
+| 1.7.2-legacy   | 0.57+            | 1.5 - 2.5        | 2.2.15          |
+| 1.7.1-legacy   | 0.53+            | 1.5 - 2.5        | 2.2.15          |
+| 1.7.0-legacy   | 0.53+            | 1.5 - 2.5        | 2.2.15          |
+| 1.6.5          | 0.57+            | 2.5 - 5.0        | 6.0.3           |
+| 1.6.4          | 0.53+            | 2.5 - 5.0        | 6.0.3           |
+| 1.6.3          | 0.53+            | 2.5 - 5.0        | 6.0.3           |
+| 1.6.2          | 0.53+            | 3.0 - 5.0        | 6.0.3           |
+
+> Driver versions **1.6.5** and **1.7.2-legacy** require Metabase 0.57+ because Metabase core changed the source-query wrapper alias to `__mb_source` (see issue [#9](https://github.com/andrevanzuydam/metabase-firebird-driver/issues/9)). On older Metabase, use 1.6.4 / 1.7.1-legacy.
 
 ## Building from source
 
@@ -180,6 +186,19 @@ clojure -X:dev:drivers:drivers-dev:test:user/firebird-driver
 ```
 
 ## Release notes
+
+### Version 1.6.5 / 1.7.2-legacy
+- Fix dashboard parameter dropdowns sourced from a card or model failing with `Column unknown; source.<COLUMN>` on Metabase 0.57+ (Issue [#9](https://github.com/andrevanzuydam/metabase-firebird-driver/issues/9))
+- Driver `:field` method now qualifies source-query column references with `__mb_source` to match Metabase core's `source-query-alias`
+- **Requires Metabase 0.57+** — for older Metabase use 1.6.4 / 1.7.1-legacy
+
+### Version 1.6.4 / 1.7.1-legacy
+- Fix temporal grouping (group by month, hour, year, etc.) producing `GROUP BY` on the raw column instead of `EXTRACT(...)` (Issue [#4](https://github.com/andrevanzuydam/metabase-firebird-driver/issues/4))
+- Fix relative "Year" filters raising `conversion error from string` due to `DATE >= INTEGER` type mismatch (Issue [#8](https://github.com/andrevanzuydam/metabase-firebird-driver/issues/8))
+- Lazy QP metadata-provider lookup so unit tests no longer require a fully-initialised QP store
+- Reorder BLOB SUB_TYPE patterns so specific variants match before bare `BLOB`
+- Rename `:foreign-keys` feature declaration to `:metadata/key-constraints` to match Metabase core's renamed feature key
+- `build.sh` now translates paths via `cygpath -m` so git-bash on Windows resolves `:local/root` correctly
 
 ### Version 1.7.0-legacy
 - New legacy driver for Firebird 1.5+ using Jaybird 2.2.15 (wire protocol 10 support)
