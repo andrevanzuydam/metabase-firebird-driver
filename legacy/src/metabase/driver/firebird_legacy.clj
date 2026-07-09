@@ -235,8 +235,13 @@
                                        :database-type     (:database_type row)
                                        :base-type         (sql-jdbc.sync/database-type->base-type :firebird-legacy (:database_type row))
                                        :database-position (:position row)
-                                       :database-required (not (:nullable row))
-                                       :pk?               (:pk row)}))
+                                       ;; :nullable is Firebird INTEGER (1 = nullable, 0 = NOT NULL).
+                                       ;; `(not 0)` is `false` because 0 is truthy in Clojure — the previous
+                                       ;; form silently reported every column as nullable. Compare explicitly.
+                                       :database-required (= 0 (:nullable row))
+                                       ;; :pk comes back as INTEGER 0/1. Metabase's TableMetadataField
+                                       ;; schema requires a boolean for :pk?, so coerce.
+                                       :pk?               (= 1 (:pk row))}))
                              result)}))))
 
 ;; Firebird 1.5 doesn't support EXISTS in SELECT expressions.
