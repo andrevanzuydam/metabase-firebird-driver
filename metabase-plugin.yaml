@@ -1,6 +1,6 @@
 info:
   name: Metabase FirebirdSQL Driver
-  version: 1.6.7
+  version: 1.6.8
   description: Allows Metabase to connect to FirebirdSQL databases.
 driver:
   name: firebird

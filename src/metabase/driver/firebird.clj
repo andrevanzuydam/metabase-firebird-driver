@@ -147,6 +147,11 @@
              nil
              (fn [^Connection conn]
                  (let [spec (sql-jdbc.conn/db->pooled-connection-spec database)
+                       ;; Issue #10 defensive: TRIM(rf.RDB$RELATION_NAME) so the WHERE match
+                       ;; is robust to CHAR(63)/UNICODE_FSS padding vs the incoming VARCHAR
+                       ;; parameter. Reporter's diagnostic showed the un-trimmed form worked
+                       ;; from an interactive SQL client, but a JDBC-parameter path may
+                       ;; behave differently in some driver/charset combinations.
                        result (jdbc/query spec
                                           [(str "SELECT TRIM(rf.RDB$FIELD_NAME) AS field_name, "
                                                 "CASE WHEN f.RDB$FIELD_TYPE = 7 THEN 'SMALLINT' "
@@ -172,11 +177,11 @@
                                                 "AND idx.RDB$FIELD_NAME = rf.RDB$FIELD_NAME), 1, 0) AS pk "
                                                 "FROM RDB$RELATION_FIELDS rf "
                                                 "JOIN RDB$FIELDS f ON rf.RDB$FIELD_SOURCE = f.RDB$FIELD_NAME "
-                                                "WHERE rf.RDB$RELATION_NAME = ?") name])]
-                      {:name   name
-                       :schema nil
-                       :fields
-                       (into #{}
+                                                "WHERE TRIM(rf.RDB$RELATION_NAME) = ?") name])
+                       _ (log/infof "describe-table :firebird table=%s → %d rows from RDB$RELATION_FIELDS join" name (count result))
+                       _ (when (seq result)
+                             (log/infof "describe-table :firebird table=%s first row: %s" name (first result)))
+                       fields (into #{}
                              (map (fn [row]
                                       {:name              (str/trim (:field_name row))
                                        :database-type     (:database_type row)
@@ -189,7 +194,11 @@
                                        ;; :pk comes back as INTEGER 0/1 from IIF(EXISTS ..., 1, 0). Metabase's
                                        ;; TableMetadataField schema requires a boolean for :pk?, so coerce.
                                        :pk?               (= 1 (:pk row))}))
-                             result)}))))
+                             result)
+                       _ (log/infof "describe-table :firebird table=%s → returning %d field(s) to Metabase" name (count fields))]
+                      {:name   name
+                       :schema nil
+                       :fields fields}))))
 
 (defmethod sql-jdbc.sync/describe-fields-sql :firebird
            [driver & {:keys [table-names]}]
@@ -390,7 +399,20 @@
                               "__mb_source"
                               :else
                               (str table-id))
-                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias]) (str field-id))
+                 ;; Issue #12: when :source-alias isn't present in opts (e.g. Field Filter
+                 ;; template tags in native SQL questions, which don't route through the MBQL
+                 ;; add-alias-info middleware), fall back to a metadata lookup for the field's
+                 ;; real name rather than stringifying the numeric field ID (which becomes an
+                 ;; invalid SQL identifier). Only look up the QP metadata provider when we
+                 ;; need it and the field-id is actually an integer.
+                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias])
+                                 (when (integer? field-id)
+                                   (try
+                                     (:name (metabase.lib.metadata/field
+                                              (metabase.query-processor.store/metadata-provider)
+                                              field-id))
+                                     (catch Throwable _ nil)))
+                                 (str field-id))
                  identifier (hx/identifier :field table-name field-alias)
                  temporal-unit (:temporal-unit opts)]
                 (log/debugf "Generating HoneySQL for field: field-id=%s, table-id=%s, table-name=%s, field-alias=%s, temporal-unit=%s" field-id table-id table-name field-alias temporal-unit)

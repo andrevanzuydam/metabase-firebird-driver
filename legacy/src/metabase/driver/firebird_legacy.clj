@@ -225,11 +225,14 @@
                                                 "LEFT JOIN RDB$INDEX_SEGMENTS idx_pk "
                                                 "ON idx_pk.RDB$INDEX_NAME = rc_pk.RDB$INDEX_NAME "
                                                 "AND idx_pk.RDB$FIELD_NAME = rf.RDB$FIELD_NAME "
-                                                "WHERE rf.RDB$RELATION_NAME = ?") name])]
-                      {:name   name
-                       :schema nil
-                       :fields
-                       (into #{}
+                                                ;; Firebird 1.5 has no TRIM() — can't defensively wrap the WHERE like the
+                                                ;; standard driver does. Legacy users on padded-CHAR-mismatch environments
+                                                ;; may need to file a specific issue.
+                                                "WHERE rf.RDB$RELATION_NAME = ?") name])
+                       _ (log/infof "describe-table :firebird-legacy table=%s → %d rows from RDB$RELATION_FIELDS join" name (count result))
+                       _ (when (seq result)
+                             (log/infof "describe-table :firebird-legacy table=%s first row: %s" name (first result)))
+                       fields (into #{}
                              (map (fn [row]
                                       {:name              (str/trim (:field_name row))
                                        :database-type     (:database_type row)
@@ -242,7 +245,11 @@
                                        ;; :pk comes back as INTEGER 0/1. Metabase's TableMetadataField
                                        ;; schema requires a boolean for :pk?, so coerce.
                                        :pk?               (= 1 (:pk row))}))
-                             result)}))))
+                             result)
+                       _ (log/infof "describe-table :firebird-legacy table=%s → returning %d field(s) to Metabase" name (count fields))]
+                      {:name   name
+                       :schema nil
+                       :fields fields}))))
 
 ;; Firebird 1.5 doesn't support EXISTS in SELECT expressions.
 ;; Return nil to disable the bulk field-sync SQL and fall back to per-table describe-table.
@@ -353,7 +360,18 @@
                               "__mb_source"
                               :else
                               (str table-id))
-                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias]) (str field-id))
+                 ;; Issue #12: when :source-alias isn't present in opts (Field Filter template
+                 ;; tags in native SQL questions don't route through the MBQL add-alias-info
+                 ;; middleware), fall back to a metadata lookup rather than stringifying the
+                 ;; numeric field ID (which becomes an invalid SQL identifier).
+                 field-alias (or (get-in opts [:metabase.query-processor.util.add-alias-info/source-alias])
+                                 (when (integer? field-id)
+                                   (try
+                                     (:name (metabase.lib.metadata/field
+                                              (metabase.query-processor.store/metadata-provider)
+                                              field-id))
+                                     (catch Throwable _ nil)))
+                                 (str field-id))
                  identifier (hx/identifier :field table-name field-alias)
                  temporal-unit (:temporal-unit opts)]
                 ;; Issue #4: preserve :temporal-unit so breakouts like "by month"/"by year"
