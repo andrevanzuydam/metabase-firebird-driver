@@ -7,8 +7,8 @@ use this driver and find it useful.
 
 | Driver | Firebird Version | Download                                                                                               |
 |--------|-----------------|--------------------------------------------------------------------------------------------------------|
-| **Standard** (recommended) | 2.5 – 5.0 | [v1.6.6](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.6.6) |
-| **Legacy** | 1.5 – 2.5 | [v1.7.3-legacy](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.3-legacy) |
+| **Standard** (recommended) | 2.5 – 5.0 | [v1.6.8](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.6.8) |
+| **Legacy** | 1.5 – 2.5 | [v1.7.4-legacy](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.4-legacy) |
 
 > **Legacy driver:** If you need to connect to Firebird 1.5 or 2.0, use the legacy driver which bundles Jaybird 2.2.15 for wire protocol 10 support. It registers as a separate driver ("FirebirdSQL Legacy 1.5+") and can coexist with the standard driver.
 
@@ -50,7 +50,7 @@ Use this table below to match the version of Firebird you are trying to connect 
 | Firebird 4.0         | 16               |
 | Firebird 5.0         | 19               |
 
-> **Note:** The standard driver (Jaybird 6.x) does not support Firebird 1.0 – 2.0 (protocol 10/11). For Firebird 1.5+, use the [legacy driver](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.3-legacy) instead.
+> **Note:** The standard driver (Jaybird 6.x) does not support Firebird 1.0 – 2.0 (protocol 10/11). For Firebird 1.5+, use the [legacy driver](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.4-legacy) instead.
 
 If you cannot get it working, please raise an issue and be sure to include the version of Metabase & Firebird you are having the issue with.
 
@@ -58,10 +58,12 @@ If you cannot get it working, please raise an issue and be sure to include the v
 
 | Driver Version | Metabase Version | Firebird Version | Jaybird Version |
 |----------------|------------------|------------------|-----------------|
+| 1.7.4-legacy   | 0.57+            | 1.5 - 2.5        | 2.2.15          |
 | 1.7.3-legacy   | 0.57+            | 1.5 - 2.5        | 2.2.15          |
 | 1.7.2-legacy   | 0.57+            | 1.5 - 2.5        | 2.2.15          |
 | 1.7.1-legacy   | 0.53+            | 1.5 - 2.5        | 2.2.15          |
 | 1.7.0-legacy   | 0.53+            | 1.5 - 2.5        | 2.2.15          |
+| 1.6.8          | 0.57+            | 2.5 - 5.0        | 6.0.3           |
 | 1.6.6          | 0.57+            | 2.5 - 5.0        | 6.0.3           |
 | 1.6.5          | 0.57+            | 2.5 - 5.0        | 6.0.3           |
 | 1.6.4          | 0.53+            | 2.5 - 5.0        | 6.0.3           |
@@ -188,6 +190,11 @@ clojure -X:dev:drivers:drivers-dev:test:user/firebird-driver
 ```
 
 ## Release notes
+
+### Version 1.6.8 / 1.7.4-legacy
+- Fix Field Filter (`"type": "dimension"`) template tags in native SQL questions producing invalid SQL that referenced the raw numeric Metabase field ID (e.g. `TABLE.5503`) instead of the column name — blocked dashboard filter dropdowns entirely for native SQL questions ([#12](https://github.com/andrevanzuydam/metabase-firebird-driver/issues/12))
+- Defensive `TRIM(rf.RDB$RELATION_NAME)` in the standard driver's `describe-table` WHERE clause (Firebird 1.5 lacks `TRIM()`, so legacy keeps plain equality)
+- Info-level logging in `describe-table` — row count from the metadata join, first row shape, and final field count returned to Metabase, so bugs like [#10 ("Table has no Fields associated with it")](https://github.com/andrevanzuydam/metabase-firebird-driver/issues/10) can be localized without a debug build
 
 ### Version 1.6.6 / 1.7.3-legacy
 - Fix `:database-required` in schema sync always reporting `false` — the driver used `(not (:nullable row))` on a Firebird `INTEGER` (1 = nullable, 0 = NOT NULL), and `(not 0)` is `false` in Clojure because 0 is truthy, so every column was silently marked as nullable regardless of the actual `NOT NULL` constraint
