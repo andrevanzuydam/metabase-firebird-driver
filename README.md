@@ -7,8 +7,8 @@ use this driver and find it useful.
 
 | Driver | Firebird Version | Download                                                                                               |
 |--------|-----------------|--------------------------------------------------------------------------------------------------------|
-| **Standard** (recommended) | 2.5 – 5.0 | [v1.6.8](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.6.8) |
-| **Legacy** | 1.5 – 2.5 | [v1.7.4-legacy](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.4-legacy) |
+| **Standard** (recommended) | 2.5 – 5.0 | [v1.6.9](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.6.9) |
+| **Legacy** | 1.5 – 2.5 | [v1.7.5-legacy](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.5-legacy) |
 
 > **Legacy driver:** If you need to connect to Firebird 1.5 or 2.0, use the legacy driver which bundles Jaybird 2.2.15 for wire protocol 10 support. It registers as a separate driver ("FirebirdSQL Legacy 1.5+") and can coexist with the standard driver.
 
@@ -50,7 +50,7 @@ Use this table below to match the version of Firebird you are trying to connect 
 | Firebird 4.0         | 16               |
 | Firebird 5.0         | 19               |
 
-> **Note:** The standard driver (Jaybird 6.x) does not support Firebird 1.0 – 2.0 (protocol 10/11). For Firebird 1.5+, use the [legacy driver](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.4-legacy) instead.
+> **Note:** The standard driver (Jaybird 6.x) does not support Firebird 1.0 – 2.0 (protocol 10/11). For Firebird 1.5+, use the [legacy driver](https://github.com/andrevanzuydam/metabase-firebird-driver/releases/tag/v1.7.5-legacy) instead.
 
 If you cannot get it working, please raise an issue and be sure to include the version of Metabase & Firebird you are having the issue with.
 
