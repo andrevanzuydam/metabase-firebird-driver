@@ -314,11 +314,30 @@
       (is (str/includes? source "IIF(EXISTS")
           "EXISTS for PK detection should be wrapped in IIF() for Firebird 2.5 compatibility"))))
 
-;;; ---------------------------------------- HoneySQL Version Test ---------------------------------------------------
+;;; ---------------------------------------- Metabase 0.64+ Compatibility (Issue #13) --------------------------------
 
-(deftest honeysql-version-test
-  (testing "Firebird driver uses HoneySQL version 2"
-    (is (= 2 (sql.qp/honey-sql-version :firebird)))))
+;; NOTE: the old `honeysql-version-test` asserted `(sql.qp/honey-sql-version :firebird)`.
+;; That var was removed from Metabase core in 0.64 (HoneySQL 2 is unconditional), so the
+;; driver no longer defines that defmethod and the assertion is gone. See issues #13/#14/#15.
+
+(deftest database-routing-opt-out-test
+  (testing "Firebird opts out of :database-routing (0.64+ defaults it to true for :sql drivers, issue #13)"
+    (is (false? (driver/database-supports? :firebird :database-routing nil)))))
+
+(deftest field-clause-arg-order-test
+  (testing "both legacy [:field id opts] and Lib [:field opts id] shapes resolve the same column (issue #13)"
+    (let [opts         {:metabase.query-processor.util.add-alias-info/source-alias "CUSTOMER_NAME"
+                        :base-type  :type/Text
+                        :lib/uuid   "11111111-1111-1111-1111-111111111111"}
+          legacy-shape (sql.qp/->honeysql :firebird [:field 5503 opts])
+          lib-shape    (sql.qp/->honeysql :firebird [:field opts 5503])
+          rendered     (pr-str lib-shape)]
+      (is (= legacy-shape lib-shape)
+          "options-first and id-first field clauses must produce identical HoneySQL")
+      (is (str/includes? rendered "CUSTOMER_NAME")
+          "the real column alias must appear in the identifier")
+      (is (not (str/includes? rendered "lib/uuid"))
+          "the options map must never be stringified into the column identifier -> Firebird 'Name longer than database column size'"))))
 
 ;;; ---------------------------------------- Breakout temporal-unit (Issue #4) ---------------------------------------
 
@@ -332,6 +351,91 @@
       (doseq [[unit expected] unit-exprs]
         (is (= expected (sql.qp/date :firebird unit :test_col))
             (str "temporal-unit " unit " must wrap with Firebird EXTRACT"))))))
+
+(deftest cte-temporal-unit-both-arg-orders-test
+  (testing "the CTE builder detects :temporal-unit in both [:field id opts] and [:field opts id] breakouts (issues #4/#13)"
+    ;; build-cte-for-complex-exprs returns nil when it finds no complex expression, or a
+    ;; CTE map (:cte-name :date_group, plus the EXTRACT/DATEADD :cte-def) when it does.
+    ;; Before the #13 fix it only looked at [:field _ opts] (position 2); a Lib-shaped
+    ;; [:field opts _] breakout (opts in position 1) slipped through untransformed.
+    (let [opts      {:temporal-unit :month-of-year}
+          processed {:query {:aggregation []}}
+          build     (fn [group-by] (#'firebird/build-cte-for-complex-exprs :firebird group-by "TBL" processed))]
+      (doseq [[shape result] [["[:field id opts]" (build [[:field 42 opts]])]
+                              ["[:field opts id]" (build [[:field opts 42]])]]]
+        (is (some? result)
+            (str shape " breakout with :temporal-unit must be routed through the CTE builder"))
+        (is (= :date_group (:cte-name result)))
+        (let [rendered (pr-str (:cte-def result))]
+          (is (str/includes? rendered ":extract")
+              (str shape " must emit EXTRACT for :month-of-year"))
+          (is (str/includes? rendered "MONTH")
+              (str shape " must EXTRACT MONTH")))))
+    (testing "a plain field with no temporal-unit does not trigger a CTE"
+      (is (nil? (#'firebird/build-cte-for-complex-exprs
+                 :firebird [[:field 42 {}]] "TBL" {:query {:aggregation []}}))))))
+
+(deftest process-mbql-query-pmbql-passthrough-test
+  (testing "process-mbql-query passes a pMBQL stage-vector through untouched instead of throwing (issue #13)"
+    ;; Metabase 0.64+ hands the SQL QP a vector of :mbql.stage/mbql maps, which has no legacy
+    ;; {:query {:aggregation ...}} key. The pre-fix else-branch called (keys ...) on that vector
+    ;; and threw a null-message ClassCastException, surfacing as "Error compiling query: null"
+    ;; and breaking EVERY structured query and all table fingerprinting on 0.64+.
+    (let [pmbql [{:lib/type    :mbql.stage/mbql
+                  :source-table 14
+                  :aggregation  [[:count {:lib/uuid "x"}]]
+                  :breakout     [[:field {:temporal-unit :month} 101]]}]]
+      (is (= pmbql (#'firebird/process-mbql-query :firebird pmbql))
+          "a pMBQL stage vector must pass through unchanged, without throwing"))
+    (testing "a plain pMBQL vector with no aggregation also passes through"
+      (let [pmbql [{:lib/type :mbql.stage/mbql :source-table 14}]]
+        (is (= pmbql (#'firebird/process-mbql-query :firebird pmbql)))))))
+
+;;; ---------------------------------------- Date Breakout Formatting (Issue #13) -----------------------------------
+
+(defn- typed-form
+  "Wrap a honey-sql expr the way Metabase 0.64+ wraps temporal breakout columns."
+  [expr]
+  [:metabase.util.honey-sql-2/typed expr {:database-type "DATE"}])
+
+(deftest strip-typed-forms-test
+  (testing "nested honey-sql-2 typed wrappers are removed, leaving the inner expression (issue #13)"
+    ;; firebird-format renders with plain honey.sql, which can't format the metabase-specific
+    ;; [:metabase.util.honey-sql-2/typed expr {:database-type ...}] clause once nested, so the
+    ;; wrappers (type info is advisory) are stripped first.
+    (let [inner [:cast [:dateadd :month [:inline 0] :x] [:raw "DATE"]]]
+      (is (= inner (#'firebird/strip-typed-forms (typed-form (typed-form inner)))))
+      (is (= {:select [[inner :a]] :from [:t]}
+             (#'firebird/strip-typed-forms {:select [[(typed-form inner) :a]] :from [:t]}))))))
+
+(deftest date-breakout-formats-to-group-by-expression-test
+  (testing "a date breakout formats to valid Firebird SQL that GROUPs BY the bucket expression (issue #13)"
+    ;; Before the fix this threw 'unknown clause :database-type' (typed wrappers) and the driver's
+    ;; CTE rewrite produced 'illegal syntax in select expression' on 0.64+ select pairs.
+    (let [field (hx/identifier :field "T" "D")
+          month (typed-form (sql.qp/date :firebird :month field))
+          q     {:select   [[month :M] [[:count :*] :c]]
+                 :from     [:t]
+                 :group-by [month]
+                 :order-by [[month :asc]]}
+          [sql & params] (#'firebird/firebird-format q)]
+      (is (string? sql))
+      (is (str/includes? sql "GROUP BY") "must group by the bucket expression")
+      (is (str/includes? sql "DATEADD(month") "DATEADD keyword must be unquoted for Firebird")
+      (is (str/includes? sql "EXTRACT(DAY FROM") "EXTRACT must use Firebird FROM syntax, not commas")
+      (is (not (str/includes? sql "date_group")) "the buggy CTE rewrite must no longer run")
+      (is (not (str/includes? sql "database-type")) "typed wrappers must be stripped")
+      ;; constants are inlined, so the repeated GROUP BY/ORDER BY expression carries no bound params
+      (is (empty? params) "no bound parameters should leak from the date expression"))))
+
+(deftest quarter-truncation-uses-mod-test
+  (testing ":quarter truncates to the quarter start via MOD, not the old add-((m-1)/3*3) formula (issue #13)"
+    ;; Regression: the previous formula mapped e.g. 2024-11-30 -> 2025-08-01 (wrong quarter and year).
+    (let [[sql] (#'firebird/firebird-format
+                  {:select [[(sql.qp/date :firebird :quarter (hx/identifier :field "T" "D")) :Q]]
+                   :from   [:t]})]
+      (is (str/includes? sql "MOD(") "quarter truncation must use MOD")
+      (is (str/includes? sql "DATEADD(month")))))
 
 ;;; ---------------------------------------- SQL Comment Removal Test ------------------------------------------------
 

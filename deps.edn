@@ -24,10 +24,16 @@
 
   ;; Run unit tests:  clojure -M:test
   :test
-  {:extra-paths   ["test"]
+  ;; "legacy/src" is on the test classpath so the legacy driver namespace can be
+  ;; loaded and exercised alongside the standard one (see firebird-legacy-test).
+  {:extra-paths   ["test" "legacy/src"]
    :extra-deps    {metabase/metabase-core {:local/root "../metabase"}}
    ;; metabase-core replaces a few upstream libs via git forks; :local/root doesn't
-   ;; propagate its :override-deps, so we restate the most disruptive one here.
-   :override-deps {redux/redux {:git/url "https://github.com/metabase/redux"
-                                :git/sha "4a37feaf817a2a6b5ef688c927f6fd4375964433"}}
+   ;; propagate its :override-deps, so we restate them here. Without these, tools.deps
+   ;; fails with "Unable to compare versions" (an :mvn/version on one side vs a :git/sha
+   ;; on the other) when resolving the :test classpath against the metabase checkout.
+   :override-deps {redux/redux    {:git/url "https://github.com/metabase/redux"
+                                   :git/sha "4a37feaf817a2a6b5ef688c927f6fd4375964433"}
+                   metosin/malli  {:git/url "https://github.com/metabase/malli"
+                                   :git/sha "b4a2d78647a049870b316753d7aae7fb4ade3ae5"}}
    :main-opts     ["-m" "metabase.driver.firebird-test-runner"]}}}

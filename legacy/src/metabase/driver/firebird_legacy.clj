@@ -1,6 +1,7 @@
 (ns metabase.driver.firebird-legacy
     (:require [clojure.set :as set]
       [clojure.string :as str]
+      [clojure.walk :as walk]
       [clojure.java.jdbc :as jdbc]
       [honey.sql :as hsql]
       [java-time :as t]
@@ -93,9 +94,10 @@
                     :password    (or pass "")}
                    (sql-jdbc.common/handle-additional-options details)))))
 
-(defmethod sql.qp/honey-sql-version :firebird-legacy
-           [_driver]
-           2)
+;; NOTE: sql.qp/honey-sql-version was removed from Metabase core in 0.64 (HoneySQL 2
+;; is now unconditional). Defining a defmethod against the missing var aborts
+;; compilation of the rest of this namespace and de-registers every defmethod below it.
+;; See issues #13/#14/#15.
 
 ;; Jaybird 2.2.x + Firebird 1.5 corrupts connection state when Statement.cancel() is called.
 ;; Metabase calls .cancel() in execute-reducible-query's finally block.
@@ -136,7 +138,10 @@
                               :nested-fields                          false
                               :set-timezone                           false
                               ;; Firebird 1.5 can't use EXISTS in SELECT — disable bulk field sync
-                              :describe-fields                        false}]
+                              :describe-fields                        false
+                              ;; Issue #13: Metabase 0.64+ defaults :database-routing to true
+                              ;; for all :sql drivers; this driver does not implement it.
+                              :database-routing                       false}]
        (defmethod driver/database-supports? [:firebird-legacy feature] [_driver _feature _db] supported?))
 
 (defmethod driver/describe-database :firebird-legacy
@@ -257,9 +262,23 @@
            [_driver & _args]
            nil)
 
+(defn- strip-typed-forms
+       "Recursively replace every `[:metabase.util.honey-sql-2/typed <expr> <type-info>]` wrapper
+        with just `<expr>` (issue #13). Metabase 0.64+ wraps temporal breakout columns with these
+        honey-sql-2 'typed' forms; plain `honey.sql/format` (used here) cannot render the bare
+        `{:database-type ...}` map once nested, so the advisory type info is dropped."
+       [form]
+       (walk/postwalk
+         (fn [x]
+             (if (and (vector? x) (= :metabase.util.honey-sql-2/typed (first x)))
+               (second x)
+               x))
+         form))
+
 (defn- firebird-legacy-format [query]
        (log/debugf "Formatting Firebird Legacy query with map: %s" query)
-       (let [limit (when (:limit query) (second (:limit query)))
+       (let [query (strip-typed-forms query)
+             limit (when (:limit query) (second (:limit query)))
              offset (when (:offset query) (second (:offset query)))
              query (cond-> query
                            (:limit query) (dissoc :limit)
@@ -346,8 +365,13 @@
             (assoc-in native-query [:native :query] modified-sql)))
 
 (defmethod sql.qp/->honeysql [:firebird-legacy :field]
-           [driver [_ field-id opts :as field]]
-           (let [table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "__mb_source")
+           [driver [_ a b :as field]]
+           ;; Issue #13: Metabase 0.64's Lib-based query representation emits
+           ;; Field Filter / template-tag clauses as [:field opts id] (options first),
+           ;; while legacy MBQL uses [:field id opts]. Detect which positional arg is
+           ;; the options map so both shapes work.
+           (let [[field-id opts] (if (map? a) [b a] [a b])
+                 table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "__mb_source")
                  ;; Only resolve the QP metadata provider when we actually need a Table lookup.
                  table-name (cond
                               (integer? table-id)
@@ -425,7 +449,7 @@
 
 (defmethod sql.qp/date [:firebird-legacy :minute]
            [_ _ expr]
-           (hx/cast :TIMESTAMP [:dateadd :minute 0 expr]))
+           (hx/cast :TIMESTAMP [:dateadd :minute [:inline 0] expr]))
 
 (defmethod sql.qp/date [:firebird-legacy :minute-of-hour]
            [_ _ expr]
@@ -433,7 +457,7 @@
 
 (defmethod sql.qp/date [:firebird-legacy :hour]
            [_ _ expr]
-           (hx/cast :TIMESTAMP [:dateadd :hour 0 expr]))
+           (hx/cast :TIMESTAMP [:dateadd :hour [:inline 0] expr]))
 
 (defmethod sql.qp/date [:firebird-legacy :hour-of-day]
            [_ _ expr]
@@ -465,7 +489,7 @@
 
 (defmethod sql.qp/date [:firebird-legacy :month]
            [_ _ expr]
-           (hx/cast :DATE [:dateadd :month 0 [:dateadd :day (hx/- 1 [:extract :DAY :from expr]) expr]]))
+           (hx/cast :DATE [:dateadd :month [:inline 0] [:dateadd :day (hx/- 1 [:extract :DAY :from expr]) expr]]))
 
 (defmethod sql.qp/date [:firebird-legacy :month-of-year]
            [_ _ expr]
@@ -473,7 +497,10 @@
 
 (defmethod sql.qp/date [:firebird-legacy :quarter]
            [_ _ expr]
-           [:dateadd :month (hx/* (hx// (hx/- [:extract :MONTH :from expr] 1) 3) 3) (hx/cast :DATE [:dateadd :month 0 [:dateadd :day (hx/- 1 [:extract :DAY :from expr]) expr]])])
+           ;; Truncate to the first day of the quarter by stepping back MOD(month-1, 3) months from
+           ;; the first of the month (issue #13; the old add-((m-1)/3*3) formula produced wrong buckets).
+           (let [first-of-month (hx/cast :DATE [:dateadd :month [:inline 0] [:dateadd :day (hx/- 1 [:extract :DAY :from expr]) expr]])]
+                [:dateadd :month [:- [:inline 0] [:mod [:- [:extract :MONTH :from expr] [:inline 1]] [:inline 3]]] first-of-month]))
 
 (defmethod sql.qp/date [:firebird-legacy :quarter-of-year]
            [_ _ expr]

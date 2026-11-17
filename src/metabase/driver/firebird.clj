@@ -1,6 +1,7 @@
 (ns metabase.driver.firebird
     (:require [clojure.set :as set]
       [clojure.string :as str]
+      [clojure.walk :as walk]
       [clojure.java.jdbc :as jdbc]
       [honey.sql :as hsql]
       [java-time :as t]
@@ -61,9 +62,12 @@
                     :password    (or pass "")}
                    (sql-jdbc.common/handle-additional-options details)))))
 
-(defmethod sql.qp/honey-sql-version :firebird
-           [_driver]
-           2)
+;; NOTE: sql.qp/honey-sql-version was removed from Metabase core in 0.64 (HoneySQL 2
+;; is now unconditional). Defining a defmethod against the missing var aborts
+;; compilation of the rest of this namespace, which de-registers every defmethod
+;; below it (e.g. database-type->base-type) and surfaces downstream as
+;; "No method in multimethod 'database-type->base-type' for dispatch value: :firebird".
+;; See issues #13/#14/#15.
 
 (defmethod driver/can-connect? :firebird
            [driver details]
@@ -89,7 +93,10 @@
                               :binning                                false
                               :case-sensitivity-string-filter-options false
                               :nested-fields                          false
-                              :set-timezone                           false}]
+                              :set-timezone                           false
+                              ;; Issue #13: Metabase 0.64+ defaults :database-routing to true
+                              ;; for all :sql drivers; this driver does not implement it.
+                              :database-routing                       false}]
        (defmethod driver/database-supports? [:firebird feature] [_driver _feature _db] supported?))
 
 (defmethod driver/describe-database :firebird
@@ -256,42 +263,42 @@
               :order-by [:table-name :database-position]}
              :dialect (sql.qp/quote-style driver)))
 
+(defn- strip-typed-forms
+       "Recursively replace every `[:metabase.util.honey-sql-2/typed <expr> <type-info>]` wrapper
+        with just `<expr>`.
+
+        Issue #13: Metabase 0.64+ wraps temporal (and other) expressions produced by the standard
+        SQL QP in honey-sql-2 'typed' forms carrying a `{:database-type ...}` map. `firebird-format`
+        renders with plain `honey.sql/format`, which does not understand that metabase-specific clause
+        once the wrapper is nested inside the driver's CTE rewrite — it tries to format the bare
+        `{:database-type ...}` map as a SQL clause and throws
+        'unknown or have nil values: :database-type'. The type info is advisory only (Metabase's own
+        `format-typed` drops it), so we strip the wrappers before the CTE rewrite and formatting.
+        Without this, every date/time breakout (group by month, day-of-week, etc.) fails to compile."
+       [form]
+       (walk/postwalk
+         (fn [x]
+             (if (and (vector? x) (= :metabase.util.honey-sql-2/typed (first x)))
+               (second x)
+               x))
+         form))
+
 (defn- firebird-format [query]
        (log/debugf "Formatting Firebird query with map: %s" query)
-       (let [limit (when (:limit query) (second (:limit query)))
+       (let [query (strip-typed-forms query)
+             limit (when (:limit query) (second (:limit query)))
              offset (when (:offset query) (second (:offset query)))
              query (cond-> query
                            (:limit query) (dissoc :limit)
                            (:offset query) (dissoc :offset))
-             group-by (:group-by query)
-             has-complex-expr? (fn [expr]
-                                   (and (coll? expr)
-                                        (some (fn [e]
-                                                  (and (coll? e) (#{:dateadd :extract} (first e))))
-                                              (tree-seq coll? seq expr))))
-             complex-exprs (when group-by (filter has-complex-expr? group-by))
-             modified-query (if (seq complex-exprs)
-                              (let [cte-aliases (map-indexed (fn [idx _] (keyword (str "field_" idx))) complex-exprs)
-                                    cte-def (map vector cte-aliases complex-exprs)
-                                    cte-name :date_group
-                                    new-select (mapcat (fn [sel]
-                                                           (if (some #(= sel %) complex-exprs)
-                                                             [(some #(when (= sel (second %)) (first %)) (map vector cte-aliases complex-exprs))]
-                                                             [sel]))
-                                                       (:select query))
-                                    new-group-by cte-aliases
-                                    new-order-by (map (fn [clause]
-                                                          (if (some #(= (first clause) %) complex-exprs)
-                                                            [(some #(when (= (first clause) (second %)) (first %)) (map vector cte-aliases complex-exprs)) (second clause)]
-                                                            clause))
-                                                      (or (:order-by query) []))]
-                                   (assoc query
-                                          :with [[cte-name {:select cte-def :from (:from query)}]]
-                                          :select new-select
-                                          :from [cte-name]
-                                          :group-by new-group-by
-                                          :order-by (if (seq new-order-by) new-order-by new-group-by)))
-                              query)
+             ;; Issue #13: date/time breakouts (group by month, day-of-week, …) compile the breakout
+             ;; column to a complex EXTRACT/DATEADD expression. Firebird accepts GROUP BY on such an
+             ;; expression directly (verified against Firebird 5), so we format the query as-is and let
+             ;; Firebird group by the repeated expression. An earlier version rewrote these into a
+             ;; `:date_group` CTE, but that builder assumed a flat select shape, broke on Metabase
+             ;; 0.64+'s `[expr alias]` select pairs ("illegal syntax in select expression"), and did
+             ;; not carry the columns needed by aggregations over other fields (e.g. SUM(AMOUNT)).
+             modified-query query
              [sql & params] (try
                               (hsql/format modified-query :dialect :ansi :quoting :ansi :allow-dashed-names true)
                               (catch Exception e
@@ -382,8 +389,14 @@
             (assoc-in native-query [:native :query] modified-sql)))
 
 (defmethod sql.qp/->honeysql [:firebird :field]
-           [driver [_ field-id opts :as field]]
-           (let [table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "__mb_source")
+           [driver [_ a b :as field]]
+           ;; Issue #13: Metabase 0.64's Lib-based query representation emits
+           ;; Field Filter / template-tag clauses as [:field opts id] (options first),
+           ;; while legacy MBQL uses [:field id opts]. Detect which positional arg is
+           ;; the options map so both shapes work; otherwise the opts map itself gets
+           ;; stringified as a column name -> "Name longer than database column size".
+           (let [[field-id opts] (if (map? a) [b a] [a b])
+                 table-id (get-in opts [:metabase.query-processor.util.add-alias-info/source-table] "__mb_source")
                  ;; Only resolve the QP metadata provider when we actually need a Table lookup.
                  ;; This keeps unit tests that exercise this method with a string/alias table-id
                  ;; from failing on an uninitialized QP store.
@@ -431,7 +444,9 @@
                                                       (and (vector? e) (= :raw (first e)) (re-find #"\?" (str (second e))))
                                                       ;; Issue #4: a plain [:field id {:temporal-unit ...}] breakout must
                                                       ;; route through the CTE builder so the unit turns into EXTRACT/DATEADD.
-                                                      (and (vector? e) (= :field (first e)) (get-in e [2 :temporal-unit]))))
+                                                      ;; Issue #13: handle both [:field id opts] and [:field opts id] shapes.
+                                                      (and (vector? e) (= :field (first e))
+                                                           (or (get-in e [2 :temporal-unit]) (get-in e [1 :temporal-unit])))))
                                               (tree-seq coll? seq expr))))
              complex-exprs (when group-by (filter has-complex-expr? group-by))]
             (when (seq complex-exprs)
@@ -440,7 +455,8 @@
                                         (fn [idx expr]
                                             (let [alias (nth cte-aliases idx)
                                                   temporal-unit (when (and (vector? expr) (= :field (first expr)))
-                                                                      (get-in expr [2 :temporal-unit]))
+                                                                      ;; Issue #13: handle both [:field id opts] and [:field opts id].
+                                                                      (or (get-in expr [2 :temporal-unit]) (get-in expr [1 :temporal-unit])))
                                                   field-alias (or (get-in (meta expr) [:metabase.query-processor.util.add-alias-info/source-alias]) "DATUM")
                                                   field-expr (hx/identifier :field table-alias field-alias)
                                                   ;; Every CAST form in this case-tree uses [:cast x [:raw "TYPE"]] rather than
@@ -513,9 +529,18 @@
 
 
 (defn- process-mbql-query
-       "Processes MBQL queries with aggregations, generating CTEs for complex date expressions if needed."
+       "Processes MBQL queries with aggregations, generating CTEs for complex date expressions if needed.
+
+        NOTE (issue #13): this CTE rewrite only ever matched the legacy MBQL shape, a map with a
+        top-level `{:query {:aggregation ...}}`. Metabase 0.64+/0.65 hands the SQL query processor a
+        pMBQL representation (a vector of `:mbql.stage/mbql` stage maps) that has no such key, so the
+        `map?`/`:query` guard below is false and we pass the query through untouched — letting the
+        standard SQL QP and this driver's `sql.qp/date` methods handle date breakouts. Without the
+        `map?` guard, the old else-branch called `keys`/`get` on the stage *vector* and threw a
+        null-message ClassCastException, which surfaced as \"Error compiling query: null\" and broke
+        EVERY structured query (and table fingerprinting) on 0.64+."
        [driver processed-query]
-       (if (and (:query processed-query) (:aggregation (:query processed-query)))
+       (if (and (map? processed-query) (:query processed-query) (:aggregation (:query processed-query)))
          (let [group-by (:group-by (:query processed-query))
                table-alias (or (-> (:source-table (:query processed-query)) meta :metabase.query-processor.util.add-alias-info/source-alias) "ACCOUNTING_BLNCE_SHEET_REPORT")
                cte-info (build-cte-for-complex-exprs driver group-by table-alias processed-query)]
@@ -533,7 +558,10 @@
                   (log/infof "process-mbql-query: no complex temporal exprs in group-by, skipping CTE rewrite. group-by=%s" group-by)
                   processed-query)))
          (do
-           (log/infof "process-mbql-query: no :query/:aggregation on processed-query, passing through. keys=%s" (keys processed-query))
+           ;; pMBQL (0.64+) or any non-legacy shape: pass through untouched. Use a safe
+           ;; description rather than (keys processed-query), which throws on a stage vector.
+           (log/debugf "process-mbql-query: non-legacy query shape (%s), passing through."
+                       (if (map? processed-query) "map" (type processed-query)))
            processed-query)))
 
 (defmethod sql.qp/preprocess :firebird
@@ -597,7 +625,7 @@
 
 (defmethod sql.qp/date [:firebird :minute]
            [_ _ expr]
-           (hx/cast :TIMESTAMP [:dateadd :minute 0 expr]))
+           (hx/cast :TIMESTAMP [:dateadd :minute [:inline 0] expr]))
 
 (defmethod sql.qp/date [:firebird :minute-of-hour]
            [_ _ expr]
@@ -605,7 +633,7 @@
 
 (defmethod sql.qp/date [:firebird :hour]
            [_ _ expr]
-           (hx/cast :TIMESTAMP [:dateadd :hour 0 expr]))
+           (hx/cast :TIMESTAMP [:dateadd :hour [:inline 0] expr]))
 
 (defmethod sql.qp/date [:firebird :hour-of-day]
            [_ _ expr]
@@ -637,7 +665,7 @@
 
 (defmethod sql.qp/date [:firebird :month]
            [_ _ expr]
-           (hx/cast :DATE [:dateadd :month 0 [:dateadd :day (hx/- 1 [:extract :DAY :from expr]) expr]]))
+           (hx/cast :DATE [:dateadd :month [:inline 0] [:dateadd :day (hx/- 1 [:extract :DAY :from expr]) expr]]))
 
 (defmethod sql.qp/date [:firebird :month-of-year]
            [_ _ expr]
@@ -645,7 +673,12 @@
 
 (defmethod sql.qp/date [:firebird :quarter]
            [_ _ expr]
-           [:dateadd :month (hx/* (hx// (hx/- [:extract :MONTH :from expr] 1) 3) 3) (hx/cast :DATE [:dateadd :month 0 [:dateadd :day (hx/- 1 [:extract :DAY :from expr]) expr]])])
+           ;; Truncate to the first day of the quarter: take the first day of the month, then
+           ;; step back MOD(month-1, 3) months to reach the quarter start (Jan/Apr/Jul/Oct).
+           ;; (The previous formula ADDED ((month-1)/3)*3 months to the first of the *current*
+           ;; month, which produced wrong buckets, e.g. 2024-11-30 -> 2025-08-01.)
+           (let [first-of-month (hx/cast :DATE [:dateadd :month [:inline 0] [:dateadd :day (hx/- 1 [:extract :DAY :from expr]) expr]])]
+                [:dateadd :month [:- [:inline 0] [:mod [:- [:extract :MONTH :from expr] [:inline 1]] [:inline 3]]] first-of-month]))
 
 (defmethod sql.qp/date [:firebird :quarter-of-year]
            [_ _ expr]
